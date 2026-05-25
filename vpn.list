@@ -1,0 +1,69 @@
+# vpn.list - hosts ALWAYS routed through the VPN (never DIRECT).
+# Applies in BOTH modes; takes precedence over direct.list.
+# Edits take effect within ~1 second.
+#
+# Entry shapes:
+#   sourcecontrol.diyarme.com       plain host
+#   *.diyarme.com                   wildcard
+#   10.77.0.0/16                    CIDR
+#   https://api.diyarme.com/v1/*    URL pattern
+
+# === Diyarme corporate (extracted from Windows hosts file) ===
+*.diyarme.com
+sourcecontrol.diyarme.com
+coretesterweb.diyarme.com
+dspmobileservice.diyarme.com
+dspzentro.diyarme.com
+dis-midc.diyarme.com
+dspcoreapi.diyarme.com
+
+# === Oman / Digitrust internal domains ===
+*.oman.local
+keycloak.oman.local
+self-service-qa-api.oman.local
+self-service-qa-web.oman.local
+self-service-dev-api.oman.local
+self-service-dev-web.oman.local
+self-service-staging-api.oman.local
+self-service-staging-web.oman.local
+
+# === ONE.DIS PKI ===
+*.one.dis.com
+ocsp.one.dis.com
+rancher.one.dis.com
+dcone.one.dis.com
+clientauth.one.dis.com
+crl.one.dis.com
+aia.one.dis.com
+
+# === ONPT / OmanPKITSP ===
+*.omanpkitsp.local
+onpt-tasapp01
+onpt-agtwweb01.omanpkitsp.local
+onpt-keycloack
+onpt-keycloack.omanpkitsp.local
+onpt-dis02.omanpkitsp.local
+
+# === DIS PKI lab ===
+*.dispki.com
+dcone.one.dispki.com
+*.pkilab.dis.duc.kw
+crl.pkilab.dis.duc.kw
+ocsp.pkilab.dis.duc.kw
+cacerts.pkilab.dis.duc.kw
+
+# === Digitrustec ===
+*.digitrustec.local
+coreapi.digitrustec.local
+*.digitrustec.dev
+dsp-admin.digitrustec.dev
+
+# === Other gov / internal ===
+sas-qa.gov
+sas-dev.gov
+
+# === Corporate 10.77.* and 10.10.77.* IP ranges ===
+10.77.0.0/16
+10.10.77.0/24
+
+# === Add your own below ===

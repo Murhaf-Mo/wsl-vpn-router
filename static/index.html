@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta content="width=device-width,initial-scale=1" name="viewport"/>
+    <title>vpn · dashboard</title>
+    <link href="/static/style.css" rel="stylesheet"/>
+    <link href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='%2334d399'/></svg>" rel="icon"/>
+</head>
+<body>
+<header class="topbar">
+    <div class="brand">
+        <span class="logo-dot" id="brandDot"></span>
+        <span class="brand-name">vpn</span>
+        <span class="brand-sub" id="brandSub">connecting…</span>
+    </div>
+    <div class="topbar-actions">
+        <button class="btn ghost" data-action="reload" title="Reload PAC + lists">
+            <svg height="14" viewBox="0 0 24 24" width="14">
+                <path d="M12 5V2L8 6l4 4V7a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7Zm-5 7H5a7 7 0 0 0 12 4.9V20l4-4-4-4v3a5 5 0 0 1-9-3Z" fill="currentColor"/>
+            </svg>
+            Reload
+        </button>
+        <button class="btn ghost" data-action="restart-oc" title="Restart the openconnect tunnel">
+            <svg height="14" viewBox="0 0 24 24" width="14">
+                <path d="M12 2v3a7 7 0 1 1-7 7H2a10 10 0 1 0 10-10Z" fill="currentColor"/>
+            </svg>
+            Reconnect
+        </button>
+    </div>
+</header>
+
+<main class="grid">
+
+    <!-- Status overview -->
+    <section class="card span-2">
+        <div class="card-head">
+            <h2>Status</h2>
+            <span class="meta" id="updatedAt">—</span>
+        </div>
+        <div class="status-grid">
+            <div class="stat">
+                <div class="stat-label">Tunnel</div>
+                <div class="stat-row">
+                    <span class="dot" id="dotTun"></span>
+                    <span class="stat-value" id="valTun">—</span>
+                </div>
+                <div class="stat-sub" id="subTun">tun0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Proxy</div>
+                <div class="stat-row">
+                    <span class="dot" id="dotProxy"></span>
+                    <span class="stat-value" id="valProxy">—</span>
+                </div>
+                <div class="stat-sub" id="subProxy">tinyproxy</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Daemon</div>
+                <div class="stat-row">
+                    <span class="dot" id="dotPac"></span>
+                    <span class="stat-value" id="valPac">—</span>
+                </div>
+                <div class="stat-sub" id="subPac">vpnctl.py</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Mode</div>
+                <div aria-label="Routing mode" class="mode-toggle" role="tablist">
+                    <button class="mode-btn" data-mode="vpn-default" role="tab">vpn-default</button>
+                    <button class="mode-btn" data-mode="direct-default" role="tab">direct-default</button>
+                </div>
+                <div class="stat-sub" id="modeHint">—</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- vpn.list -->
+    <section class="card">
+        <div class="card-head">
+            <h2>vpn.list <span class="pill" id="vpnCount">0</span></h2>
+            <span class="meta">always through VPN</span>
+        </div>
+        <form class="add-row" data-list="vpn">
+            <input autocomplete="off" placeholder="add domain, CIDR, or URL pattern" spellcheck="false" type="text"/>
+            <button class="btn primary" type="submit">Add</button>
+        </form>
+        <ul class="list" id="vpnList"></ul>
+    </section>
+
+    <!-- direct.list -->
+    <section class="card">
+        <div class="card-head">
+            <h2>direct.list <span class="pill" id="directCount">0</span></h2>
+            <span class="meta">always direct (home)</span>
+        </div>
+        <form class="add-row" data-list="direct">
+            <input autocomplete="off" placeholder="add domain, CIDR, or URL pattern" spellcheck="false" type="text"/>
+            <button class="btn primary" type="submit">Add</button>
+        </form>
+        <ul class="list" id="directList"></ul>
+    </section>
+
+    <!-- Logs -->
+    <section class="card span-2">
+        <div class="card-head">
+            <h2>Logs</h2>
+            <div aria-label="Log file" class="tabs" role="tablist">
+                <button class="tab active" data-log="oc" role="tab">openconnect</button>
+                <button class="tab" data-log="pac" role="tab">vpnctl</button>
+                <button class="tab" data-log="proxy" role="tab">tinyproxy</button>
+                <span class="tabs-spacer"></span>
+                <label class="follow"><input checked id="follow" type="checkbox"/> follow</label>
+            </div>
+        </div>
+        <pre class="log" id="logView">loading…</pre>
+    </section>
+
+</main>
+
+<div aria-live="polite" class="toast" id="toast" role="status"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
