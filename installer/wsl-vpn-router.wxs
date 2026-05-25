@@ -1,0 +1,208 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX v6 source for the wsl-vpn-router MSI.
+
+  Builds with:
+    wix build installer\wsl-vpn-router.wxs `
+      -arch x64 `
+      -d Version=1.2.3 `
+      -d StagingDir=E:\work-repositories\wsl-vpn-router `
+      -o wsl-vpn-router-1.2.3.msi
+
+  - Version is supplied via -d Version=... from CI; defaults to 0.0.0 here.
+  - StagingDir points at a directory holding the EXACT files we ship:
+      vpn.exe, vpn-tray.exe, vpnctl.py, setup-wsl.sh, vpn.list, direct.list,
+      config.toml.example, uninstall.ps1, static\app.js, static\index.html,
+      static\style.css.
+    The release pipeline assembles this dir before invoking wix.
+
+  Notes:
+    - UpgradeCode is fixed forever. Changing it would make new versions look
+      like an unrelated product and skip MajorUpgrade.
+    - Components use stable per-file GUIDs so MSI's upgrade logic can identify
+      "same file across versions" cleanly.
+    - We DON'T install vpn.list / direct.list / config.toml directly to the
+      DataDir — first-run seeding inside vpn.exe does that, so user edits in
+      %LOCALAPPDATA% survive upgrades without MSI fighting over the files.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <?define UpgradeCode = "8B6C0F50-6A8B-4D5F-8E61-2F7C8E9A1D42"?>
+  <?ifndef Version?>
+    <?define Version = "0.0.0"?>
+  <?endif?>
+  <?ifndef StagingDir?>
+    <?define StagingDir = "."?>
+  <?endif?>
+
+  <Package
+      Name="wsl-vpn-router"
+      Manufacturer="Murhaf-Mo"
+      Version="$(var.Version)"
+      UpgradeCode="$(var.UpgradeCode)"
+      Scope="perMachine"
+      InstallerVersion="500"
+      Compressed="yes">
+
+    <SummaryInformation
+        Description="WSL-backed PAC + OpenConnect routing for Windows"
+        Manufacturer="Murhaf-Mo"/>
+
+    <!-- In-place upgrades from any older version; explicit error on downgrade. -->
+    <MajorUpgrade
+        DowngradeErrorMessage="A newer version of [ProductName] is already installed."
+        Schedule="afterInstallInitialize"/>
+
+    <!-- App icon: used by ARP, Start Menu shortcut, and Desktop shortcut.
+         Multi-resolution .ico (16/24/32/48/64/128/256) generated from the
+         existing 32x32 tray icon by build-time scaling. -->
+    <Icon Id="AppIcon.ico" SourceFile="$(var.StagingDir)\wsl-vpn-router.ico"/>
+
+    <!-- Add/Remove Programs metadata. -->
+    <Property Id="ARPHELPLINK" Value="https://github.com/Murhaf-Mo/wsl-vpn-router"/>
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Murhaf-Mo/wsl-vpn-router"/>
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico"/>
+    <Property Id="ARPNOMODIFY" Value="1"/>
+    <Property Id="ARPNOREPAIR" Value="1"/>
+
+    <!-- Single cab embedded in the MSI -->
+    <Media Id="1" Cabinet="app.cab" EmbedCab="yes"/>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLDIR" Name="wsl-vpn-router">
+        <Directory Id="StaticDir" Name="static"/>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Start Menu folder. Shortcut launches the tray; user can pin to taskbar from there. -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppMenuDir" Name="wsl-vpn-router"/>
+    </StandardDirectory>
+
+    <!-- Desktop shortcut directory (just a reference to the standard Desktop folder). -->
+    <StandardDirectory Id="DesktopFolder"/>
+
+    <Feature Id="Main" Title="wsl-vpn-router" Level="1">
+
+      <!-- ===== Binaries (top-level INSTALLDIR) ===== -->
+      <Component Id="cmpVpnExe" Guid="A2B1C3D4-0001-0001-0001-000000000001" Directory="INSTALLDIR">
+        <File Id="filVpnExe" Source="$(var.StagingDir)\vpn.exe" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpVpnTrayExe" Guid="A2B1C3D4-0001-0001-0001-000000000002" Directory="INSTALLDIR">
+        <File Id="filVpnTrayExe" Source="$(var.StagingDir)\vpn-tray.exe" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpVpnctlPy" Guid="A2B1C3D4-0001-0001-0001-000000000003" Directory="INSTALLDIR">
+        <File Id="filVpnctlPy" Source="$(var.StagingDir)\vpnctl.py" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpSetupWslSh" Guid="A2B1C3D4-0001-0001-0001-000000000004" Directory="INSTALLDIR">
+        <File Id="filSetupWslSh" Source="$(var.StagingDir)\setup-wsl.sh" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpVpnList" Guid="A2B1C3D4-0001-0001-0001-000000000005" Directory="INSTALLDIR">
+        <File Id="filVpnList" Source="$(var.StagingDir)\vpn.list" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpDirectList" Guid="A2B1C3D4-0001-0001-0001-000000000006" Directory="INSTALLDIR">
+        <File Id="filDirectList" Source="$(var.StagingDir)\direct.list" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpConfigExample" Guid="A2B1C3D4-0001-0001-0001-000000000007" Directory="INSTALLDIR">
+        <File Id="filConfigExample" Source="$(var.StagingDir)\config.toml.example" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpUninstallPs1" Guid="A2B1C3D4-0001-0001-0001-000000000008" Directory="INSTALLDIR">
+        <File Id="filUninstallPs1" Source="$(var.StagingDir)\uninstall.ps1" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpWslProvision" Guid="A2B1C3D4-0001-0001-0001-000000000009" Directory="INSTALLDIR">
+        <File Id="filWslProvision" Source="$(var.StagingDir)\wslprovision.cmd" KeyPath="yes"/>
+      </Component>
+
+      <!-- The app icon file itself - shipped so shortcut Icon references resolve. -->
+      <Component Id="cmpAppIcon" Guid="A2B1C3D4-0001-0001-0001-00000000000A" Directory="INSTALLDIR">
+        <File Id="filAppIcon" Source="$(var.StagingDir)\wsl-vpn-router.ico" KeyPath="yes"/>
+      </Component>
+
+      <!-- ===== Start Menu shortcut ===== -->
+      <!-- Launches the tray (vpn-tray.exe is windowsgui, no console). The
+           shortcut's working directory is INSTALLDIR so the tray finds
+           sibling files (static/, vpnctl.py). -->
+      <Component Id="cmpStartMenuShortcut" Guid="A2B1C3D4-0004-0004-0004-000000000001" Directory="AppMenuDir">
+        <Shortcut Id="scStartMenuTray"
+                  Name="wsl-vpn-router"
+                  Description="System tray for the WSL-backed VPN router"
+                  Target="[INSTALLDIR]vpn-tray.exe"
+                  WorkingDirectory="INSTALLDIR"
+                  Icon="AppIcon.ico"
+                  IconIndex="0"/>
+        <!-- Empty Start Menu folder removal on uninstall. -->
+        <RemoveFolder Id="rmAppMenuDir" On="uninstall"/>
+        <!-- HKCU keypath is required for shortcuts (Windows Installer
+             needs a per-user marker to know the user "has" the shortcut). -->
+        <RegistryValue Root="HKCU"
+                       Key="Software\wsl-vpn-router"
+                       Name="StartMenuShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes"/>
+      </Component>
+
+      <!-- ===== Desktop shortcut ===== -->
+      <Component Id="cmpDesktopShortcut" Guid="A2B1C3D4-0004-0004-0004-000000000002" Directory="DesktopFolder">
+        <Shortcut Id="scDesktopTray"
+                  Name="wsl-vpn-router"
+                  Description="System tray for the WSL-backed VPN router"
+                  Target="[INSTALLDIR]vpn-tray.exe"
+                  WorkingDirectory="INSTALLDIR"
+                  Icon="AppIcon.ico"
+                  IconIndex="0"/>
+        <RegistryValue Root="HKCU"
+                       Key="Software\wsl-vpn-router"
+                       Name="DesktopShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes"/>
+      </Component>
+
+      <!-- ===== static/ dashboard assets ===== -->
+      <Component Id="cmpStaticIndex" Guid="A2B1C3D4-0002-0002-0002-000000000001" Directory="StaticDir">
+        <File Id="filStaticIndex" Source="$(var.StagingDir)\static\index.html" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpStaticAppJs" Guid="A2B1C3D4-0002-0002-0002-000000000002" Directory="StaticDir">
+        <File Id="filStaticAppJs" Source="$(var.StagingDir)\static\app.js" KeyPath="yes"/>
+      </Component>
+      <Component Id="cmpStaticStyleCss" Guid="A2B1C3D4-0002-0002-0002-000000000003" Directory="StaticDir">
+        <File Id="filStaticStyleCss" Source="$(var.StagingDir)\static\style.css" KeyPath="yes"/>
+      </Component>
+
+      <!-- ===== HKLM install marker ===== -->
+      <!-- vpn.exe / vpn-tray.exe / vpnctl.py read InstallDir from this key to
+           locate static/ and the daemon script. Removed on uninstall. -->
+      <Component Id="cmpHklmKey" Guid="A2B1C3D4-0003-0003-0003-000000000001" Directory="INSTALLDIR">
+        <RegistryKey Root="HKLM" Key="Software\wsl-vpn-router">
+          <RegistryValue Type="string" Name="InstallDir" Value="[INSTALLDIR]" KeyPath="yes"/>
+          <RegistryValue Type="string" Name="Version" Value="$(var.Version)"/>
+        </RegistryKey>
+      </Component>
+
+    </Feature>
+
+    <!--
+      No custom actions here on purpose.
+
+      Earlier versions ran wslprovision.cmd and `vpn.exe configure` from MSI
+      custom actions (WixQuietExec). That silenced their stdout/stderr and
+      made the install dialog appear frozen at 75% for the 5+ minutes that
+      wsl-install / apt-install can take on a fresh machine — and the MSI
+      Cancel button couldn't interrupt the external process either.
+
+      Those steps now live in install.ps1 (the irm one-liner wrapper). It
+      self-elevates once, runs `msiexec /i` for the fast file-copy phase,
+      then invokes wslprovision.cmd and `vpn.exe configure` directly in the
+      same elevated PowerShell console — all output is visible in real time.
+
+      Users who run the MSI standalone (without install.ps1) get just the
+      file copy. They are expected to then run, as admin:
+          "C:\Program Files\wsl-vpn-router\wslprovision.cmd"
+          "C:\Program Files\wsl-vpn-router\vpn.exe" configure
+      (Or just re-run the irm one-liner — it detects an existing install
+      and upgrades / completes provisioning idempotently.)
+    -->
+
+  </Package>
+</Wix>
