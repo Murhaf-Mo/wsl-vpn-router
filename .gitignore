@@ -1,0 +1,27 @@
+# Plaintext credentials — local only.
+config.toml
+
+# Runtime artifacts (regenerated on each `vpn up`)
+runtime/
+vpn-tray.err
+
+# Catch-all in case any of these escape to the root.
+*.log
+*.pid
+tinyproxy.conf
+
+# Built binaries — produced by ./build.ps1
+vpn.exe
+vpn-tray.exe
+
+# MSI build artifacts (produced by `wix build` locally or in CI staging)
+*.msi
+*.msi.sha256
+*.wixpdb
+installer/staging/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+.idea
