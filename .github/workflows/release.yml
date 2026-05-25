@@ -1,0 +1,182 @@
+name: release
+
+# Fires on tag pushes shaped like v1.2.3. The tag value becomes the embedded
+# version (vpn --version, MSI ProductVersion, MSI filename).
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write   # softprops/action-gh-release uploads artifacts
+
+# Silences the "Node.js 20 actions are deprecated" warning. GitHub plans to
+# force-migrate Node 20 actions to Node 24 by June 2026; opting in early is
+# safe — the actions we use (checkout, setup-go, upload/download-artifact,
+# action-gh-release) all run correctly under Node 24.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+
+  # -------- Step 1: cross-compile Go binaries on linux --------
+  build-binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          # Pin to a concrete version that setup-go will download if the runner's
+          # default toolchain is older. go-version-file pointed at controller/go.mod
+          # quietly fell back to the runner's pre-installed 1.24.13 when the file
+          # asked for 1.25.0, breaking the build with "go.mod requires go >= 1.25.0".
+          go-version: '1.25.x'
+          cache: true
+          cache-dependency-path: controller/go.sum
+
+      - name: Derive version (strip leading "v")
+        id: ver
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Building version $v"
+
+      - name: Build vpn.exe + vpn-tray.exe
+        working-directory: controller
+        env:
+          # GOOS=windows for cross-compile. -X stamps the version constant in
+          # the release package so `vpn --version` reports the real tag.
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          VER="${{ steps.ver.outputs.version }}"
+          LDFLAGS="-s -w -X github.com/vpn/controller/internal/release.localVersion=$VER"
+          go build -buildvcs=false -ldflags "$LDFLAGS" -o ../vpn.exe       ./cmd/vpn
+          go build -buildvcs=false -ldflags "$LDFLAGS -H windowsgui" -o ../vpn-tray.exe ./cmd/vpn-tray
+          ls -la ../vpn.exe ../vpn-tray.exe
+
+      - name: Run release unit tests
+        working-directory: controller
+        run: go test ./internal/release/...
+
+      - name: Upload binaries for the package job
+        uses: actions/upload-artifact@v5
+        with:
+          name: binaries
+          path: |
+            vpn.exe
+            vpn-tray.exe
+          if-no-files-found: error
+
+  # -------- Step 2: package MSI on windows --------
+  # windows-2025 is the explicit runner that windows-latest is being redirected
+  # to (June 2026). Pinning here avoids the deprecation notice.
+  package-msi:
+    runs-on: windows-2025
+    needs: build-binaries
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Derive version
+        id: ver
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download binaries from build-binaries
+        uses: actions/download-artifact@v5
+        with:
+          name: binaries
+          path: .
+
+      - name: Install WiX v6
+        shell: pwsh
+        run: |
+          # Pin to an exact WiX major.minor.patch so the matching extension
+          # version below is guaranteed compatible. Bare-version (--version 6.*)
+          # pulls latest, and bare-name extension installs grab v7.x for
+          # WiX v7, which the v6 binary rejects ("Could not find expected
+          # package root folder wixext6").
+          dotnet tool install --global wix --version 6.0.0
+          # Ensure the just-installed tool is on PATH for subsequent steps.
+          echo "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+          wix --version
+
+      - name: Stage files for MSI build
+        shell: pwsh
+        run: |
+          # WiX's File@Source paths in wsl-vpn-router.wxs all derive from
+          # $(var.StagingDir). Lay that out exactly here.
+          $stage = "$PWD\installer\staging"
+          New-Item -ItemType Directory -Force -Path "$stage\static" | Out-Null
+          Copy-Item .\vpn.exe                 "$stage\vpn.exe"
+          Copy-Item .\vpn-tray.exe            "$stage\vpn-tray.exe"
+          Copy-Item .\vpnctl.py               "$stage\vpnctl.py"
+          Copy-Item .\setup-wsl.sh            "$stage\setup-wsl.sh"
+          Copy-Item .\vpn.list                "$stage\vpn.list"
+          Copy-Item .\direct.list             "$stage\direct.list"
+          Copy-Item .\config.toml.example     "$stage\config.toml.example"
+          Copy-Item .\uninstall.ps1           "$stage\uninstall.ps1"
+          Copy-Item .\wslprovision.ps1        "$stage\wslprovision.ps1"
+          Copy-Item .\wsl-vpn-router.ico      "$stage\wsl-vpn-router.ico"
+          Copy-Item .\static\index.html       "$stage\static\index.html"
+          Copy-Item .\static\app.js           "$stage\static\app.js"
+          Copy-Item .\static\style.css        "$stage\static\style.css"
+          Get-ChildItem -Recurse $stage | Select-Object FullName, Length
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          $ver  = "${{ steps.ver.outputs.version }}"
+          $out  = "wsl-vpn-router-$ver.msi"
+          $stage = "$PWD\installer\staging"
+          # Pin the util extension to the same major version as wix itself.
+          # Bare-name install pulls latest (v7.x → built for WiX v7) and fails
+          # at wix build time: "Could not find expected package root folder
+          # wixext6". /6.* wildcard is rejected with WIX0001 — only exact
+          # version is accepted by `wix extension add`.
+          wix extension add -g WixToolset.Util.wixext/6.0.0
+          wix build installer\wsl-vpn-router.wxs `
+              -arch x64 `
+              -ext WixToolset.Util.wixext `
+              -d "Version=$ver" `
+              -d "StagingDir=$stage" `
+              -o $out
+          Get-Item $out
+
+      - name: Compute SHA-256 + stable-named copies
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          $msi = "wsl-vpn-router-$ver.msi"
+          $hash = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLower()
+          # shasum-compatible format: "<hex>  <filename>". Single-line.
+          "$hash  $msi" | Set-Content -NoNewline "$msi.sha256"
+          Get-Content "$msi.sha256"
+          # Stable, unversioned copies so install.ps1 can pull via the
+          # api-free redirect https://github.com/<repo>/releases/latest/download/<name>
+          # (avoids the api.github.com 60-req/hr rate limit that 403s shared IPs).
+          Copy-Item $msi "wsl-vpn-router.msi"
+          "$hash  wsl-vpn-router.msi" | Set-Content -NoNewline "wsl-vpn-router.msi.sha256"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Tag triggered us, so use it as-is. Body left blank — maintainer
+          # can edit the release page to add notes after publish.
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            wsl-vpn-router-${{ steps.ver.outputs.version }}.msi
+            wsl-vpn-router-${{ steps.ver.outputs.version }}.msi.sha256
+            wsl-vpn-router.msi
+            wsl-vpn-router.msi.sha256
+            install.ps1
