@@ -584,40 +584,36 @@ select {
 /* =====================================================================
    Topology diagram
    ===================================================================== */
-.topo-wrap { width: 100%; overflow-x: auto; }
-#topo { width: 100%; min-width: 680px; height: auto; display: block; }
+.topo-wrap { width: 100%; }
+.topo-canvas { width: 100%; height: 270px; }
 
-.topo-node rect {
-    fill: var(--layer-02);
-    stroke: var(--border-strong-01);
-    stroke-width: 1.5;
-    transition: fill 120ms, stroke 120ms;
+/* node/edge styling is defined in JS (Cytoscape stylesheet); these just frame
+   the canvas and the legend beneath it. */
+.topo-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-05);
+    margin-top: var(--sp-04);
+    font-size: .75rem;
+    color: var(--text-helper);
 }
-.topo-node text {
-    fill: var(--text-primary);
-    font-family: var(--font-sans);
-    font-size: 13px;
-    text-anchor: middle;
-    dominant-baseline: middle;
+.topo-legend span { display: inline-flex; align-items: center; gap: var(--sp-02); }
+.topo-legend .lg {
+    width: .75rem; height: .75rem;
+    border-radius: 2px;
+    border: 2px solid var(--border-strong-01);
+    background: var(--layer-02);
 }
-.topo-node .topo-sub { fill: var(--text-helper); font-family: var(--font-mono); font-size: 11px; }
-.topo-node.controllable { cursor: pointer; }
-.topo-node.controllable:hover rect { stroke: var(--border-interactive); }
-.topo-node.selected rect { stroke: var(--border-interactive); stroke-width: 2.5; }
-.topo-node.ok rect     { stroke: var(--support-success); }
-.topo-node.warn rect   { stroke: var(--support-warning); }
-.topo-node.err rect    { stroke: var(--support-error); }
-.topo-node.paused rect { stroke: var(--support-paused); stroke-dasharray: 4 3; }
-
-.topo-edge {
-    fill: none;
-    stroke: var(--border-strong-01);
-    stroke-width: 2;
-    transition: stroke 120ms;
+.topo-legend .lg.ok     { border-color: var(--support-success); }
+.topo-legend .lg.warn   { border-color: var(--support-warning); }
+.topo-legend .lg.err    { border-color: var(--support-error); }
+.topo-legend .lg.paused { border-color: var(--support-paused); border-style: dashed; }
+.topo-legend .lg.edge   {
+    width: 1.25rem; height: 0;
+    border: none;
+    border-top: 2px solid var(--border-interactive);
+    border-radius: 0;
 }
-.topo-edge.edge-active { stroke: var(--border-interactive); }
-.topo-arrow  { fill: var(--border-strong-01); }
-.topo-branch { fill: var(--text-helper); font-family: var(--font-mono); font-size: 11px; text-anchor: middle; letter-spacing: .04em; }
 
 .topo-controls {
     display: flex;

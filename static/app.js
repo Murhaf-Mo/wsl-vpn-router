@@ -179,7 +179,7 @@ function renderStatus(s) {
     updateCompControls('tinyproxy', tp);
 
     // topology
-    renderTopo(s, oc, tp);
+    updateTopo(s, oc, tp);
 
     // mode
     $$('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === s.mode));
@@ -210,36 +210,113 @@ function updateCompControls(name, c) {
     if (start) start.disabled = !paused && c.pid > 0;
 }
 
-// ---------- topology ----------
-function setNode(id, kind) {
-    const g = $(`#node-${id}`);
-    if (!g) return;
-    g.classList.remove('ok', 'warn', 'err', 'paused');
-    if (kind) g.classList.add(kind);
+// ---------- topology (Cytoscape) ----------
+let cy = null;
+
+// Fixed left-to-right pipeline. Preset positions in an arbitrary coordinate
+// space; Cytoscape fits them to the container. Controllable nodes carry a
+// `comp` and the 'controllable' class so only they are selectable/clickable.
+const TOPO_ELEMENTS = [
+    { data: { id: 'win',    label: 'Windows app' },  position: { x: 0,   y: 90 } },
+    { data: { id: 'pac',    label: 'PAC' },           position: { x: 160, y: 90 } },
+    { data: { id: 'direct', label: 'Home network' },  position: { x: 330, y: 0 } },
+    { data: { id: 'proxy',  label: 'tinyproxy :8888', comp: 'tinyproxy' },  classes: 'controllable', position: { x: 330, y: 165 } },
+    { data: { id: 'oc',     label: 'openconnect',     comp: 'openconnect' }, classes: 'controllable', position: { x: 500, y: 165 } },
+    { data: { id: 'tun',    label: 'tun0',            comp: 'openconnect' }, classes: 'controllable', position: { x: 640, y: 165 } },
+    { data: { id: 'corp',   label: 'Corp network' },  position: { x: 780, y: 165 } },
+    { data: { id: 'e-win-pac',    source: 'win',   target: 'pac' } },
+    { data: { id: 'e-pac-direct', source: 'pac',   target: 'direct', branch: 'direct' } },
+    { data: { id: 'e-pac-proxy',  source: 'pac',   target: 'proxy',  branch: 'proxy' } },
+    { data: { id: 'e-proxy-oc',   source: 'proxy', target: 'oc',     branch: 'proxy' } },
+    { data: { id: 'e-oc-tun',     source: 'oc',    target: 'tun',    branch: 'proxy' } },
+    { data: { id: 'e-tun-corp',   source: 'tun',   target: 'corp',   branch: 'proxy' } },
+];
+
+const TOPO_STYLE = [
+    { selector: 'node', style: {
+        'shape': 'round-rectangle',
+        'background-color': '#141414',
+        'border-color': '#3d3d3d', 'border-width': 1.5,
+        'label': 'data(label)', 'color': '#f5f5f5',
+        'font-family': 'Segoe UI, sans-serif',
+        'font-size': 13, 'text-valign': 'center', 'text-halign': 'center',
+        'width': 'label', 'height': 36, 'padding': '12px', 'text-wrap': 'none',
+    }},
+    { selector: 'node.controllable', style: { 'background-color': '#1c1c1c' } },
+    { selector: 'node.ok',     style: { 'border-color': '#42be65', 'border-width': 2 } },
+    { selector: 'node.warn',   style: { 'border-color': '#f1c21b', 'border-width': 2 } },
+    { selector: 'node.err',    style: { 'border-color': '#fa4d56', 'border-width': 2 } },
+    { selector: 'node.paused', style: { 'border-color': '#7a7a7a', 'border-style': 'dashed', 'border-width': 2 } },
+    { selector: 'node:selected', style: {
+        'border-color': '#4589ff', 'border-width': 3, 'background-color': '#16223e',
+        'overlay-color': '#0f62fe', 'overlay-opacity': 0.14, 'overlay-padding': 7,
+    }},
+    { selector: 'edge', style: {
+        'width': 2, 'line-color': '#3d3d3d',
+        'target-arrow-color': '#3d3d3d', 'target-arrow-shape': 'triangle', 'arrow-scale': 0.9,
+        'curve-style': 'taxi', 'taxi-direction': 'horizontal', 'taxi-turn': '40%',
+    }},
+    { selector: 'edge.edge-active', style: {
+        'line-color': '#0f62fe', 'target-arrow-color': '#0f62fe', 'width': 2.5,
+    }},
+];
+
+function initTopo() {
+    const el = document.getElementById('topo');
+    if (cy || !el || !window.cytoscape) return;
+    cy = cytoscape({
+        container: el,
+        elements: TOPO_ELEMENTS,
+        style: TOPO_STYLE,
+        layout: { name: 'preset' },
+        userZoomingEnabled: false,
+        userPanningEnabled: false,
+        boxSelectionEnabled: false,
+        autoungrabify: true,
+        selectionType: 'single',
+    });
+    cy.nodes().not('.controllable').unselectify();
+    cy.on('tap', 'node.controllable', evt => selectTopoComponent(evt.target.data('comp'), evt.target));
+    cy.on('tap', evt => {                       // background tap clears selection
+        if (evt.target === cy) {
+            cy.$(':selected').unselect();
+            $('#topoControls').hidden = true;
+        }
+    });
+    fitTopo();
 }
 
-function setEdge(id, active) {
-    const e = $(`#${id}`);
-    if (e) e.classList.toggle('edge-active', !!active);
+function fitTopo() {
+    if (cy) { cy.resize(); cy.fit(undefined, 26); }
 }
 
-function renderTopo(s, oc, tp) {
-    setNode('win', 'ok');
-    setNode('pac', s.pac_pid ? 'ok' : 'err');
-    setNode('direct', 'ok');
-    setNode('proxy', dotFor(tp));
-    setNode('oc', oc.desired === 'down' ? 'paused' : (oc.pid > 0 ? 'ok' : 'warn'));
-    setNode('tun', s.tun0_ip ? 'ok' : (oc.desired === 'down' ? 'paused' : 'err'));
-    setNode('corp', s.tun0_ip ? 'ok' : 'err');
-
-    // Highlight the branch the default mode sends unlisted traffic down.
+function updateTopo(s, oc, tp) {
+    if (!cy) return;
+    const cls = {
+        win: 'ok',
+        pac: s.pac_pid ? 'ok' : 'err',
+        direct: 'ok',
+        proxy: tp.desired === 'down' ? 'paused' : (tp.pid > 0 ? 'ok' : 'err'),
+        oc: oc.desired === 'down' ? 'paused' : (oc.pid > 0 ? 'ok' : 'warn'),
+        tun: s.tun0_ip ? 'ok' : (oc.desired === 'down' ? 'paused' : 'err'),
+        corp: s.tun0_ip ? 'ok' : 'err',
+    };
+    Object.entries(cls).forEach(([id, k]) => {
+        cy.getElementById(id).removeClass('ok warn err paused').addClass(k);
+    });
+    // Light up the branch the default mode sends unlisted traffic down.
     const vpnDefault = s.mode !== 'direct-default';
-    setEdge('e-win-pac', true);
-    setEdge('e-pac-direct', !vpnDefault);
-    setEdge('e-pac-proxy', vpnDefault);
-    setEdge('e-proxy-oc', vpnDefault);
-    setEdge('e-oc-tun', vpnDefault);
-    setEdge('e-tun-corp', vpnDefault);
+    cy.edges().forEach(e => {
+        const br = e.data('branch');
+        const active = !br || (br === 'proxy' ? vpnDefault : !vpnDefault);
+        e.toggleClass('edge-active', active);
+    });
+}
+
+function topoAllDown() {
+    if (!cy) return;
+    cy.nodes().removeClass('ok warn paused').addClass('err');
+    cy.edges().removeClass('edge-active');
 }
 
 async function refreshStatus() {
@@ -253,7 +330,7 @@ async function refreshStatus() {
         $('#brandSub').textContent = 'unreachable';
         ['#dotTun', '#dotProxy', '#dotPac'].forEach(s => setDot($(s), 'err'));
         ['#valTun', '#valProxy', '#valPac'].forEach(s => $(s).textContent = '—');
-        ['win', 'pac', 'direct', 'proxy', 'oc', 'tun', 'corp'].forEach(n => setNode(n, 'err'));
+        topoAllDown();
     }
 }
 
@@ -558,22 +635,20 @@ function wireComponentControls() {
     });
 }
 
-// wireTopo makes the controllable nodes select their component into the
-// control bar under the diagram.
-function wireTopo() {
-    $$('#topo .topo-node.controllable').forEach(g => {
-        g.addEventListener('click', () => selectTopoComponent(g.dataset.comp));
-    });
-}
-
-function selectTopoComponent(name) {
+// selectTopoComponent points the control bar at a component and reflects the
+// selection in the Cytoscape graph (its built-in :selected styling).
+function selectTopoComponent(name, node) {
     const bar = $('#topoControls');
     if (!bar) return;
+    if (cy) {
+        cy.$(':selected').unselect();
+        // Select every node mapped to this component (oc + tun0 share one).
+        if (node) node.select();
+        cy.nodes(`[comp = "${name}"]`).select();
+    }
     $('#topoControlsLabel').textContent = name;
     bar.querySelectorAll('[data-verb]').forEach(b => { b.dataset.comp = name; });
     bar.hidden = false;
-    // Highlight every node mapped to the selected component (oc + tun0 share one).
-    $$('#topo .topo-node').forEach(g => g.classList.toggle('selected', g.dataset.comp === name));
 }
 
 // ---------- router ----------
@@ -587,6 +662,8 @@ function showPage(page) {
     // Refresh the entered page's data immediately (its poller only runs while visible).
     if (page === 'routing') { refreshList('vpn'); refreshList('direct'); }
     if (page === 'logs') refreshLog();
+    // Cytoscape needs a resize/fit once its container becomes visible.
+    if (page === 'overview') fitTopo();
 }
 
 function router() {
@@ -606,9 +683,10 @@ async function boot() {
     wireConfigForm();
     wireListTools();
     wireComponentControls();
-    wireTopo();
+    initTopo();
     router();
     window.addEventListener('hashchange', router);
+    window.addEventListener('resize', fitTopo);
     await Promise.all([refreshStatus(), refreshList('vpn'), refreshList('direct'), refreshLog(), loadConfig()]);
     // Status always polls (drives nav badge + topology). List/log pollers only
     // do work while their page is visible.

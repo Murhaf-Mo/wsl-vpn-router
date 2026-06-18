@@ -70,7 +70,9 @@
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLDIR" Name="wsl-vpn-router">
-        <Directory Id="StaticDir" Name="static"/>
+        <Directory Id="StaticDir" Name="static">
+          <Directory Id="VendorDir" Name="vendor"/>
+        </Directory>
       </Directory>
     </StandardDirectory>
 
@@ -169,6 +171,12 @@
       </Component>
       <Component Id="cmpStaticStyleCss" Guid="A2B1C3D4-0002-0002-0002-000000000003" Directory="StaticDir">
         <File Id="filStaticStyleCss" Source="$(var.StagingDir)\static\style.css" KeyPath="yes"/>
+      </Component>
+
+      <!-- Vendored graph library (Cytoscape.js) — bundled so the dashboard's
+           topology renders fully offline. -->
+      <Component Id="cmpStaticVendorCyto" Guid="A2B1C3D4-0002-0002-0002-000000000004" Directory="VendorDir">
+        <File Id="filStaticVendorCyto" Source="$(var.StagingDir)\static\vendor\cytoscape.min.js" KeyPath="yes"/>
       </Component>
 
       <!-- ===== HKLM install marker ===== -->

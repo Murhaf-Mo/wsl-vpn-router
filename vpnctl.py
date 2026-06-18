@@ -1163,9 +1163,28 @@ class PacHandler(BaseHTTPRequestHandler):
         ctype = _STATIC_TYPES.get(ext, "application/octet-stream")
         with open(full, "rb") as f:
             data = f.read()
-        # Cache assets but never index.html (so dashboard updates land instantly).
+        # index.html is served no-cache; rewrite its app.js/style.css references
+        # with a ?v=<mtime> query so a new install busts the browser cache. The
+        # assets stay cacheable within a version but refetch when the file
+        # changes (fixes "dashboard still shows the old version after upgrade").
+        if ext == ".html":
+            data = self._bust_asset_urls(data)
         cache = ext in (".css", ".js", ".svg", ".png", ".ico", ".woff2")
         self._send(200, ctype, data, cache=cache)
+
+    @staticmethod
+    def _asset_mtime(name):
+        try:
+            return int(os.stat(os.path.join(STATIC_DIR, name)).st_mtime)
+        except OSError:
+            return 0
+
+    def _bust_asset_urls(self, data):
+        html = data.decode("utf-8", errors="replace")
+        for name in ("app.js", "style.css"):
+            html = html.replace(f"/static/{name}",
+                                f"/static/{name}?v={self._asset_mtime(name)}")
+        return html.encode("utf-8")
 
     # ---- routing ----
     def do_OPTIONS(self):  # noqa: N802

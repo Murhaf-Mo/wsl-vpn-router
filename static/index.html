@@ -107,55 +107,14 @@
             <span class="meta">how a request is routed · click the proxy or tunnel to control it</span>
         </div>
         <div class="topo-wrap">
-            <svg id="topo" viewBox="0 0 940 250" preserveAspectRatio="xMidYMid meet" role="img"
-                 aria-label="Traffic flow diagram">
-                <defs>
-                    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
-                            orient="auto-start-reverse">
-                        <path d="M0,0 L10,5 L0,10 z" class="topo-arrow"/>
-                    </marker>
-                </defs>
-                <!-- edges -->
-                <path id="e-win-pac"    class="topo-edge" marker-end="url(#arrow)" d="M150,124 H194"/>
-                <path id="e-pac-direct" class="topo-edge" marker-end="url(#arrow)" d="M292,116 C322,116 322,60 346,60"/>
-                <path id="e-pac-proxy"  class="topo-edge" marker-end="url(#arrow)" d="M292,132 C322,132 322,190 346,190"/>
-                <path id="e-proxy-oc"   class="topo-edge" marker-end="url(#arrow)" d="M500,190 H532"/>
-                <path id="e-oc-tun"     class="topo-edge" marker-end="url(#arrow)" d="M676,190 H708"/>
-                <path id="e-tun-corp"   class="topo-edge" marker-end="url(#arrow)" d="M796,190 H822"/>
-                <!-- nodes -->
-                <g class="topo-node" id="node-win">
-                    <rect x="16" y="100" width="134" height="48" rx="2"/>
-                    <text x="83" y="129">Windows app</text>
-                </g>
-                <g class="topo-node" id="node-pac">
-                    <rect x="194" y="100" width="98" height="48" rx="2"/>
-                    <text x="243" y="129">PAC</text>
-                </g>
-                <g class="topo-node" id="node-direct">
-                    <rect x="346" y="36" width="152" height="48" rx="2"/>
-                    <text x="422" y="65">Home network</text>
-                </g>
-                <g class="topo-node controllable" id="node-proxy" data-comp="tinyproxy">
-                    <rect x="346" y="166" width="152" height="48" rx="2"/>
-                    <text x="422" y="187">tinyproxy</text>
-                    <text x="422" y="203" class="topo-sub">:8888</text>
-                </g>
-                <g class="topo-node controllable" id="node-oc" data-comp="openconnect">
-                    <rect x="532" y="166" width="144" height="48" rx="2"/>
-                    <text x="604" y="195">openconnect</text>
-                </g>
-                <g class="topo-node controllable" id="node-tun" data-comp="openconnect">
-                    <rect x="708" y="166" width="88" height="48" rx="2"/>
-                    <text x="752" y="195">tun0</text>
-                </g>
-                <g class="topo-node" id="node-corp">
-                    <rect x="822" y="166" width="106" height="48" rx="2"/>
-                    <text x="875" y="195">Corp network</text>
-                </g>
-                <!-- branch labels -->
-                <text x="318" y="48" class="topo-branch">DIRECT</text>
-                <text x="318" y="178" class="topo-branch">PROXY</text>
-            </svg>
+            <div id="topo" class="topo-canvas" role="img" aria-label="Traffic flow diagram"></div>
+        </div>
+        <div class="topo-legend">
+            <span><i class="lg ok"></i> running</span>
+            <span><i class="lg warn"></i> recovering</span>
+            <span><i class="lg paused"></i> paused</span>
+            <span><i class="lg err"></i> down</span>
+            <span><i class="lg edge"></i> active route</span>
         </div>
         <div class="topo-controls" id="topoControls" hidden>
             <span class="topo-controls-label">Control <strong id="topoControlsLabel">component</strong>:</span>
@@ -306,6 +265,7 @@
 </main>
 
 <div aria-live="polite" class="toast" id="toast" role="status"></div>
+<script src="/static/vendor/cytoscape.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

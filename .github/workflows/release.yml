@@ -113,7 +113,7 @@ jobs:
           # WiX's File@Source paths in wsl-vpn-router.wxs all derive from
           # $(var.StagingDir). Lay that out exactly here.
           $stage = "$PWD\installer\staging"
-          New-Item -ItemType Directory -Force -Path "$stage\static" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$stage\static\vendor" | Out-Null
           Copy-Item .\vpn.exe                 "$stage\vpn.exe"
           Copy-Item .\vpn-tray.exe            "$stage\vpn-tray.exe"
           Copy-Item .\vpnctl.py               "$stage\vpnctl.py"
@@ -127,6 +127,7 @@ jobs:
           Copy-Item .\static\index.html       "$stage\static\index.html"
           Copy-Item .\static\app.js           "$stage\static\app.js"
           Copy-Item .\static\style.css        "$stage\static\style.css"
+          Copy-Item .\static\vendor\cytoscape.min.js "$stage\static\vendor\cytoscape.min.js"
           Get-ChildItem -Recurse $stage | Select-Object FullName, Length
 
       - name: Build MSI
