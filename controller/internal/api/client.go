@@ -22,16 +22,29 @@ type Client struct {
 
 // Status mirrors the daemon's /api/status response.
 type Status struct {
-	Mode         string   `json:"mode"`
-	OcPid        int      `json:"oc_pid"`
-	TinyproxyPid int      `json:"tinyproxy_pid"`
-	PacPid       int      `json:"pac_pid"`
-	Tun0IP       string   `json:"tun0_ip"`
-	WSLIp        string   `json:"wsl_ip"`
-	ProxyPort    int      `json:"proxy_port"`
-	VPNList      ListInfo `json:"vpn_list"`
-	DirectList   ListInfo `json:"direct_list"`
+	Mode         string               `json:"mode"`
+	OcPid        int                  `json:"oc_pid"`
+	TinyproxyPid int                  `json:"tinyproxy_pid"`
+	PacPid       int                  `json:"pac_pid"`
+	Tun0IP       string               `json:"tun0_ip"`
+	WSLIp        string               `json:"wsl_ip"`
+	ProxyPort    int                  `json:"proxy_port"`
+	Components   map[string]Component `json:"components"`
+	VPNList      ListInfo             `json:"vpn_list"`
+	DirectList   ListInfo             `json:"direct_list"`
 }
+
+// Component is the per-component view: actual pid plus the operator's desired
+// state ("up"/"down"). desired=="down" with pid 0 means paused; desired=="up"
+// with pid 0 means crashed and the supervisor is respawning it.
+type Component struct {
+	Pid        int    `json:"pid"`
+	Desired    string `json:"desired"`
+	Supervised bool   `json:"supervised"`
+}
+
+// Paused reports whether the operator has pinned this component down.
+func (c Component) Paused() bool { return c.Desired == "down" }
 
 type ListInfo struct {
 	Domains     int     `json:"domains"`
@@ -194,4 +207,24 @@ func (c *Client) RestartOpenconnect() (*Status, error) {
 		return nil, err
 	}
 	return &s, nil
+}
+
+// ---- Components ----
+
+// ComponentResult is the daemon's reply to a component action.
+type ComponentResult struct {
+	Component string `json:"component"`
+	Desired   string `json:"desired"`
+	Pid       int    `json:"pid"`
+}
+
+// ComponentAction drives one component (openconnect|tinyproxy) through one verb
+// (start|stop|pause|resume|restart) via /api/components/{name}/{verb}.
+func (c *Client) ComponentAction(name, verb string) (*ComponentResult, error) {
+	var r ComponentResult
+	path := fmt.Sprintf("/api/components/%s/%s", url.PathEscape(name), url.PathEscape(verb))
+	if err := c.do("POST", path, nil, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
 }

@@ -70,8 +70,18 @@ TP_PID_MIRROR = f"{RUNTIME_DIR}/proxy.pid"
 TP_LOG_MIRROR = f"{RUNTIME_DIR}/proxy.log"
 PAC_PID = f"{RUNTIME_DIR}/pac.pid"
 PAC_LOG = f"{RUNTIME_DIR}/pac.log"
+# Desired-state of the supervised components, persisted so a paused component
+# stays paused across a daemon restart. See the desired-state helpers below.
+DESIRED_PATH = f"{RUNTIME_DIR}/desired.json"
 
-LOG_PATHS = {"oc": OC_LOG, "pac": PAC_LOG, "proxy": TP_LOG_MIRROR}
+# "events" is an alias for the structured daemon log (pac.log) — the timeline
+# of component actions, supervisor activity, and errors. It's the log the
+# level filter is most useful on.
+LOG_PATHS = {"oc": OC_LOG, "pac": PAC_LOG, "proxy": TP_LOG_MIRROR, "events": PAC_LOG}
+
+# Severity ordering for the /api/logs ?level= filter. Lines without a
+# recognized "[level]" tag (raw openconnect/tinyproxy output) always pass.
+LOG_LEVELS = {"info": 0, "warn": 1, "error": 2}
 
 
 def _resolve_version():
@@ -91,14 +101,82 @@ def _resolve_version():
 
 DAEMON_VERSION = _resolve_version()
 
+# --no-connect (dashboard-only): serve the PAC/API/dashboard but do NOT bring up
+# openconnect or tinyproxy. Lets `vpn dashboard` open the UI without a `vpn up`.
+NO_CONNECT = "--no-connect" in sys.argv
+
 # Module-level lock to serialize list-file writes across HTTP threads.
 _lists_write_lock = threading.Lock()
 
+# ---------- Component supervision: desired-state model ----------
+# The two long-running children the daemon owns. (The daemon itself — the PAC
+# server — is NOT supervisable here; it can't stop itself. Stopping it is the
+# Windows side's job via `vpn down`.)
+COMPONENTS = ("openconnect", "tinyproxy")
 
-def log(msg):
-    line = f"[{time.strftime('%H:%M:%S')}] {msg}\n"
+# DESIRED[name] is the operator's intent: "up" → the supervisor keeps it
+# running (respawns it if it dies); "down" → the supervisor leaves it stopped
+# (this is what "pause" means — a clean stop pinned down so we don't fight it).
+DESIRED = {name: "up" for name in COMPONENTS}
+_desired_lock = threading.Lock()
+
+# Per-component respawn bookkeeping for the crash-loop backoff.
+_sup_state = {name: {"fails": 0, "next_try": 0.0} for name in COMPONENTS}
+
+# Serializes start/stop of a component so a manual action (HTTP handler thread)
+# and the supervisor thread can't spawn the same child twice.
+_component_lock = threading.Lock()
+
+# Set true the instant we begin tearing down, so the supervisor never respawns
+# a component we are deliberately killing in shutdown().
+SHUTTING_DOWN = False
+
+
+def log(msg, comp="daemon", level="info"):
+    line = f"[{time.strftime('%H:%M:%S')}] [{level}] [{comp}] {msg}\n"
     sys.stdout.write(line)
     sys.stdout.flush()
+
+
+def load_desired():
+    """Read runtime/desired.json into DESIRED (defaults to all 'up')."""
+    try:
+        with open(DESIRED_PATH) as f:
+            data = json.load(f)
+    except (FileNotFoundError, ValueError, OSError):
+        return
+    with _desired_lock:
+        for k in COMPONENTS:
+            v = data.get(k)
+            if v in ("up", "down"):
+                DESIRED[k] = v
+
+
+def save_desired():
+    with _desired_lock:
+        snap = dict(DESIRED)
+    try:
+        tmp = DESIRED_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(snap, f)
+        os.replace(tmp, DESIRED_PATH)
+    except Exception as e:
+        log(f"could not persist desired state: {e}", comp="supervisor", level="warn")
+
+
+def get_desired(name):
+    with _desired_lock:
+        return DESIRED.get(name, "up")
+
+
+def set_desired(name, state):
+    if name not in COMPONENTS:
+        raise ValueError(f"unknown component '{name}'")
+    if state not in ("up", "down"):
+        raise ValueError("state must be 'up' or 'down'")
+    with _desired_lock:
+        DESIRED[name] = state
+    save_desired()
 
 
 # ---------- Minimal TOML parser (handles our simple config) ----------
@@ -371,12 +449,12 @@ def ensure_pre_vpn_network(sudo_pw):
         full = f"sudo bash -c {shlex.quote(script)}"
     subprocess.run(["bash", "-c", full], check=False,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    log("pre-vpn fixups: " + ", ".join(fixes))
+    log("pre-vpn network fixups: " + ", ".join(fixes), comp="openconnect")
 
 
 def start_openconnect(cfg):
     if is_alive(OC_PID):
-        log(f"openconnect already running (pid {is_alive(OC_PID)})")
+        log(f"already running (pid {is_alive(OC_PID)})", comp="openconnect")
         return
     vpn = cfg["vpn"]
     sudo_pw = cfg.get("wsl", {}).get("sudo_password", "")
@@ -405,16 +483,22 @@ def start_openconnect(cfg):
         full = f"echo {shlex.quote(sudo_pw)} | sudo -S bash -c {shlex.quote(oc_cmd)}"
     else:
         full = f"sudo bash -c {shlex.quote(oc_cmd)}"
-    log("starting openconnect")
+    log(f"connecting to {host}", comp="openconnect")
     subprocess.run(["bash", "-c", full], check=False)
     # wait up to 15s for tun0 to appear
     for _ in range(30):
         if os.path.exists("/sys/class/net/tun0"):
-            log("tun0 is up")
+            log(f"tun0 up ({get_tun0_ip() or 'no ip yet'})", comp="openconnect")
             ensure_mss_clamp(sudo_pw)
             return
         time.sleep(0.5)
-    log("WARNING: tun0 not detected after 15s — check oc.log")
+    # Surface why it failed instead of a bare warning — pull the tail of oc.log
+    # into the daemon log so it shows up in the dashboard/events view.
+    tail = read_log_tail(OC_LOG, 6).strip()
+    log("tun0 not detected after 15s — openconnect did not connect",
+        comp="openconnect", level="error")
+    for ln in tail.splitlines():
+        log(f"oc.log: {ln}", comp="openconnect", level="error")
 
 
 def ensure_mss_clamp(sudo_pw):
@@ -437,9 +521,47 @@ def ensure_mss_clamp(sudo_pw):
         full = f"sudo bash -c {shlex.quote(script)}"
     r = subprocess.run(["bash", "-c", full], capture_output=True, text=True)
     if r.returncode == 0:
-        log("MSS clamp on tun0 installed")
+        log("MSS clamp on tun0 installed", comp="openconnect")
     else:
-        log(f"MSS clamp failed: {r.stderr.strip()}")
+        log(f"MSS clamp failed: {r.stderr.strip()}", comp="openconnect", level="warn")
+
+
+def remove_mss_clamp(sudo_pw):
+    """Delete the tun0 MSS-clamp mangle rules ensure_mss_clamp installed, so a
+    teardown doesn't leave dangling iptables rules pointing at a gone tun0."""
+    rules = [
+        "OUTPUT -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu",
+        "FORWARD -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu",
+    ]
+    cmds = [f"iptables -t mangle -D {r} 2>/dev/null" for r in rules]
+    cmds.append("true")
+    script = " ; ".join(cmds)
+    if sudo_pw:
+        full = f"echo {shlex.quote(sudo_pw)} | sudo -S bash -c {shlex.quote(script)}"
+    else:
+        full = f"sudo bash -c {shlex.quote(script)}"
+    subprocess.run(["bash", "-c", full], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log("MSS clamp removed", comp="openconnect")
+
+
+def stop_openconnect(cfg):
+    """Kill openconnect (pidfile + any strays) and restore the pre-VPN network
+    if its vpnc-script didn't (e.g. it was SIGKILLed). Idempotent."""
+    sudo_pw = cfg.get("wsl", {}).get("sudo_password", "")
+    kill_pid_file(OC_PID, with_sudo=True, sudo_pw=sudo_pw)
+    # Tear down any stray openconnects the pidfile didn't cover.
+    subprocess.run(
+        ["bash", "-c",
+         f"echo {shlex.quote(sudo_pw)} | sudo -S pkill openconnect 2>/dev/null; true"],
+        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    remove_mss_clamp(sudo_pw)
+    # openconnect's SIGTERM handler normally runs vpnc-script disconnect and
+    # restores resolv.conf + the default route; this is the fallback for the
+    # unclean-death case (only acts if it detects the @VPNC_GENERATED@ marker).
+    ensure_pre_vpn_network(sudo_pw)
+    log("stopped", comp="openconnect")
 
 
 def write_tinyproxy_conf(cfg):
@@ -488,7 +610,7 @@ def tinyproxy_pid():
 
 def start_tinyproxy(cfg):
     if tinyproxy_pid():
-        log(f"tinyproxy already running (pid {tinyproxy_pid()})")
+        log(f"already running (pid {tinyproxy_pid()})", comp="tinyproxy")
         return
     write_tinyproxy_conf(cfg)
     sudo_pw = cfg.get("wsl", {}).get("sudo_password", "")
@@ -497,20 +619,142 @@ def start_tinyproxy(cfg):
         full = f"echo {shlex.quote(sudo_pw)} | sudo -S {cmd}"
     else:
         full = f"sudo {cmd}"
-    log("starting tinyproxy")
+    log(f"starting on {cfg['proxy']['bind_addr']}:{cfg['proxy']['http_port']}", comp="tinyproxy")
     r = subprocess.run(["bash", "-c", full], capture_output=True, text=True)
     if r.returncode != 0:
-        log(f"tinyproxy failed (rc={r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+        log(f"failed (rc={r.returncode}): {r.stderr.strip() or r.stdout.strip()}",
+            comp="tinyproxy", level="error")
         return
     time.sleep(0.7)
     pid = tinyproxy_pid()
-    log(f"tinyproxy pid {pid}")
+    log(f"running (pid {pid})", comp="tinyproxy")
     if pid:
         try:
             with open(TP_PID_MIRROR, "w") as f:
                 f.write(str(pid))
         except Exception:
             pass
+
+
+def stop_tinyproxy(cfg):
+    """Kill tinyproxy and clear its pidfile + mirror. Leaves the log files in
+    place (the mirror under runtime/ stays readable for post-mortem)."""
+    sudo_pw = cfg.get("wsl", {}).get("sudo_password", "")
+    pid = tinyproxy_pid()
+    if pid:
+        subprocess.run(
+            ["sudo", "-S", "kill", str(pid)],
+            input=sudo_pw + "\n", text=True, check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    for f in (TP_PID, TP_PID_MIRROR):
+        try:
+            os.remove(f)
+        except FileNotFoundError:
+            pass
+    log("stopped", comp="tinyproxy")
+
+
+# ---------- Component dispatch + supervisor ----------
+def component_alive(name):
+    return bool(component_pid(name))
+
+
+def component_pid(name):
+    if name == "openconnect":
+        return is_alive(OC_PID)
+    if name == "tinyproxy":
+        return tinyproxy_pid()
+    return 0
+
+
+def start_component(name, cfg):
+    if name == "openconnect":
+        start_openconnect(cfg)
+    elif name == "tinyproxy":
+        start_tinyproxy(cfg)
+
+
+def stop_component(name, cfg):
+    if name == "openconnect":
+        stop_openconnect(cfg)
+    elif name == "tinyproxy":
+        stop_tinyproxy(cfg)
+
+
+def do_component_action(name, verb, cfg):
+    """Apply an operator action to a component. pause/resume are deliberately
+    aliases of stop/start — "pause" == clean stop pinned desired=down so the
+    supervisor leaves it alone. Serialized against the supervisor."""
+    with _component_lock:
+        if verb in ("start", "resume"):
+            set_desired(name, "up")
+            log(f"{verb} {name}", comp="ctl")
+            start_component(name, cfg)
+        elif verb in ("stop", "pause"):
+            set_desired(name, "down")
+            log(f"{verb} {name}", comp="ctl")
+            stop_component(name, cfg)
+        elif verb == "restart":
+            set_desired(name, "up")
+            log(f"restart {name}", comp="ctl")
+            stop_component(name, cfg)
+            start_component(name, cfg)
+        else:
+            raise ValueError(f"unknown verb '{verb}'")
+        # Reset backoff so a manual action clears any crash-loop penalty.
+        _sup_state[name]["fails"] = 0
+        _sup_state[name]["next_try"] = 0.0
+
+
+def _supervise_once():
+    """One pass of the supervisor: respawn any desired-up component that died,
+    with a per-component crash-loop backoff. desired-down components are left
+    alone (that's pause)."""
+    cfg = None
+    for name in COMPONENTS:
+        if SHUTTING_DOWN:
+            return
+        if get_desired(name) != "up":
+            continue
+        if component_alive(name):
+            _sup_state[name]["fails"] = 0
+            _sup_state[name]["next_try"] = 0.0
+            continue
+        now = time.time()
+        if now < _sup_state[name]["next_try"]:
+            continue
+        if cfg is None:
+            cfg = load_config()
+        with _component_lock:
+            # Re-check under the lock: a manual action may have changed desired
+            # or already started it while we were waiting.
+            if SHUTTING_DOWN or get_desired(name) != "up" or component_alive(name):
+                continue
+            log(f"{name} is down, respawning", comp="supervisor", level="warn")
+            start_component(name, cfg)
+        if component_alive(name):
+            _sup_state[name]["fails"] = 0
+            _sup_state[name]["next_try"] = 0.0
+            log(f"{name} respawned", comp="supervisor")
+        else:
+            fails = _sup_state[name]["fails"] + 1
+            _sup_state[name]["fails"] = fails
+            backoff = min(60, 3 * (2 ** min(fails, 5)))
+            _sup_state[name]["next_try"] = now + backoff
+            log(f"{name} respawn failed (attempt {fails}); backing off {backoff}s",
+                comp="supervisor", level="error")
+
+
+def supervisor_thread():
+    while True:
+        if SHUTTING_DOWN:
+            return
+        try:
+            _supervise_once()
+        except Exception as e:
+            log(f"error: {e}", comp="supervisor", level="error")
+        time.sleep(3)
 
 
 def log_mirror_thread():
@@ -759,6 +1003,23 @@ def apply_list_edits(path, add=None, remove=None):
         return added, removed, skipped
 
 
+def filter_log_by_level(text, min_level):
+    """Drop structured lines below min_level. Lines that don't match the
+    "[HH:MM:SS] [level] [comp]" shape (raw oc/proxy output) always pass."""
+    floor = LOG_LEVELS.get(min_level)
+    if floor is None:
+        return text
+    out = []
+    for line in text.splitlines():
+        m = re.search(r"\] \[(\w+)\] \[", line)
+        if m:
+            lv = LOG_LEVELS.get(m.group(1))
+            if lv is not None and lv < floor:
+                continue
+        out.append(line)
+    return "\n".join(out) + ("\n" if out else "")
+
+
 def read_log_tail(path, n):
     if not os.path.exists(path):
         return ""
@@ -791,15 +1052,28 @@ def build_status():
     DIRECT_RULES.reload_if_changed()
     vd, vc, vu = VPN_RULES.snapshot()
     dd, dc, du = DIRECT_RULES.snapshot()
+    oc = is_alive(OC_PID)
+    tp = tinyproxy_pid()
     return {
         "version": DAEMON_VERSION,
         "mode": current_mode(),
-        "oc_pid": is_alive(OC_PID),
-        "tinyproxy_pid": tinyproxy_pid(),
+        # True when launched dashboard-only (no VPN, Windows proxy not wired).
+        "no_connect": NO_CONNECT,
+        # Flat pids kept for back-compat with older clients.
+        "oc_pid": oc,
+        "tinyproxy_pid": tp,
         "pac_pid": os.getpid(),
         "tun0_ip": get_tun0_ip(),
         "wsl_ip": PacHandler.proxy_host,
         "proxy_port": PacHandler.proxy_port,
+        # Per-component view: actual pid + the operator's desired state, so a
+        # UI can tell "crashed (desired up → recovering)" from "paused".
+        "components": {
+            "openconnect": {"pid": oc, "desired": get_desired("openconnect"),
+                            "supervised": True},
+            "tinyproxy": {"pid": tp, "desired": get_desired("tinyproxy"),
+                          "supervised": True},
+        },
         "vpn_list": {"domains": len(vd), "cidrs": len(vc), "urls": len(vu),
                      "mtime": VPN_RULES.mtime, "last_reload": VPN_RULES.last_reload},
         "direct_list": {"domains": len(dd), "cidrs": len(dc), "urls": len(du),
@@ -825,7 +1099,20 @@ class PacHandler(BaseHTTPRequestHandler):
     proxy_port = 8888
 
     def log_message(self, format, *args):  # noqa: A002 - matches base class
-        log("http " + (format % args))
+        log(format % args, comp="http")
+
+    def log_request(self, code="-", size="-"):  # noqa: N802 - matches base class
+        # Successful GETs are almost all dashboard/PAC polling — logging them
+        # buries the interesting events. Surface only mutations and problems.
+        try:
+            c = int(code)
+        except (TypeError, ValueError):
+            c = 0
+        if self.command == "GET" and 200 <= c < 400:
+            return
+        level = "warn" if c >= 400 else "info"
+        log(f"{self.command} {self.path.split('?', 1)[0]} -> {code}",
+            comp="http", level=level)
 
     # ---- response helpers ----
     def _send(self, code, ctype, body, *, cache=False):
@@ -937,8 +1224,11 @@ class PacHandler(BaseHTTPRequestHandler):
                 tail = max(1, min(2000, int(qs.get("tail", ["200"])[0])))
             except ValueError:
                 pass
-            return self._send(200, "text/plain; charset=utf-8",
-                              read_log_tail(LOG_PATHS[name], tail))
+            text = read_log_tail(LOG_PATHS[name], tail)
+            level = qs.get("level", [""])[0]
+            if level:
+                text = filter_log_by_level(text, level)
+            return self._send(200, "text/plain; charset=utf-8", text)
 
         # Dashboard / static
         if path == "/" or path.startswith("/static/") or path in ("/favicon.ico",):
@@ -1010,17 +1300,29 @@ class PacHandler(BaseHTTPRequestHandler):
                 return self._json({"reloaded": bool(c1 or c2)})
 
             if path == "/api/restart-openconnect":
+                # Legacy "Reconnect" button. Equivalent to a component restart of
+                # openconnect; pin desired=up so the supervisor keeps it running.
                 cfg = load_config()
-                sudo_pw = cfg.get("wsl", {}).get("sudo_password", "")
-                kill_pid_file(OC_PID, with_sudo=True, sudo_pw=sudo_pw)
-                # tear down stray openconnects too
-                subprocess.run(
-                    ["bash", "-c",
-                     f"echo {shlex.quote(sudo_pw)} | sudo -S pkill openconnect 2>/dev/null; true"],
-                    check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-                start_openconnect(cfg)
+                do_component_action("openconnect", "restart", cfg)
                 return self._json({"oc_pid": is_alive(OC_PID), "tun0_ip": get_tun0_ip()})
+
+            if path.startswith("/api/components/"):
+                # /api/components/{name}/{verb}
+                parts = path.split("/")  # ['', 'api', 'components', name, verb]
+                if len(parts) != 5:
+                    return self._err(404, "not found")
+                name, verb = parts[3], parts[4]
+                if name not in COMPONENTS:
+                    return self._err(404, f"unknown component '{name}'")
+                if verb not in ("start", "stop", "pause", "resume", "restart"):
+                    return self._err(404, f"unknown verb '{verb}'")
+                cfg = load_config()
+                do_component_action(name, verb, cfg)
+                return self._json({
+                    "component": name,
+                    "desired": get_desired(name),
+                    "pid": component_pid(name),
+                })
 
             return self._err(404, "not found")
         except ValueError as e:
@@ -1096,18 +1398,38 @@ def main():
     with open(PAC_PID, "w") as f:
         f.write(str(os.getpid()))
 
+    # Dashboard-only: serve the UI/API but leave both components stopped (and
+    # don't touch desired.json). Otherwise restore the operator's last desired
+    # state (e.g. a component left paused).
+    if NO_CONNECT:
+        with _desired_lock:
+            for name in COMPONENTS:
+                DESIRED[name] = "down"
+        log("dashboard-only mode: serving UI/API, components left stopped "
+            "(run `vpn up` to connect)", comp="daemon")
+    else:
+        load_desired()
+
     def shutdown(*_):
-        log("shutting down")
+        global SHUTTING_DOWN
+        # Flip this FIRST so the supervisor thread won't try to respawn the very
+        # components we're about to kill.
+        SHUTTING_DOWN = True
+        log("shutting down", comp="daemon")
         sudo_pw = cfg.get("wsl", {}).get("sudo_password", "")
-        tp = tinyproxy_pid()
-        if tp:
-            subprocess.run(
-                ["sudo", "-S", "kill", str(tp)],
-                input=sudo_pw + "\n", text=True, check=False,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        kill_pid_file(OC_PID, with_sudo=True, sudo_pw=sudo_pw)
-        for f in (PAC_PID, TP_PID_MIRROR):
+        # Each step is best-effort: a failure in one must not skip the rest.
+        for step in (
+            lambda: stop_tinyproxy(cfg),
+            lambda: os.remove(TP_LOG),
+            lambda: stop_openconnect(cfg),   # also removes MSS rules + restores DNS/route
+        ):
+            try:
+                step()
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                log(f"shutdown step failed: {e}", comp="daemon", level="warn")
+        for f in (PAC_PID, DESIRED_PATH):
             try:
                 os.remove(f)
             except FileNotFoundError:
@@ -1117,14 +1439,20 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    start_openconnect(cfg)
-    start_tinyproxy(cfg)
+    # Only start what the operator wants up; a paused component stays down and
+    # the supervisor honours that.
+    for name in COMPONENTS:
+        if get_desired(name) == "up":
+            start_component(name, cfg)
+        else:
+            log(f"{name} desired=down — leaving stopped", comp="supervisor")
     VPN_RULES.reload_if_changed()
     DIRECT_RULES.reload_if_changed()
 
     threading.Thread(target=watcher_thread, daemon=True).start()
     threading.Thread(target=log_mirror_thread, daemon=True).start()
-    log(f"PAC server on {bind}:{pac_port}")
+    threading.Thread(target=supervisor_thread, daemon=True).start()
+    log(f"PAC server on {bind}:{pac_port}", comp="daemon")
     srv = ThreadingHTTPServer((bind, pac_port), PacHandler)
     srv.daemon_threads = True
     srv.serve_forever()

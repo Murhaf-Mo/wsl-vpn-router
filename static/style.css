@@ -1,16 +1,12 @@
 /* =====================================================================
-   wsl-vpn-router dashboard - IBM Carbon Design System (Gray 100 theme)
+   wsl-vpn-router dashboard - black monochrome, blue primary
 
    Plain CSS, no build step, no CDN (the daemon serves this from inside WSL
-   and must work air-gapped). Token values are taken verbatim from Carbon v11:
-     - palette:  @carbon/colors
-     - theme:    @carbon/themes g100 (dark)
-     - spacing:  $spacing-01..13  (2,4,8,12,16,24,32,40,48,64,80,96,160 px)
-     - type:     IBM Plex Sans/Mono productive type set
-
-   IBM Plex isn't bundled (keeps the install small + offline); the font stack
-   prefers it if installed, else falls back to the platform UI sans. Layout,
-   color, and component shapes carry the Carbon identity regardless.
+   and must work air-gapped). A true-neutral near-black layer ladder on a
+   #000 background; blue (#0f62fe family) is the only interactive accent;
+   green / yellow / red are reserved strictly for component status. Carbon's
+   spacing scale + IBM Plex type stack are retained (font falls back to the
+   platform UI sans when Plex isn't installed).
    ===================================================================== */
 
 :root {
@@ -38,33 +34,36 @@
     --cds-green-40: #42be65;
     --cds-yellow-30:#f1c21b;
 
-    /* ---- g100 theme tokens (mapped from palette) ---- */
-    --background:        var(--cds-gray-100);
-    --layer-01:          var(--cds-gray-90);
-    --layer-02:          var(--cds-gray-80);
-    --layer-accent-01:   var(--cds-gray-80);
-    --field-01:          var(--cds-gray-90);
-    --field-02:          var(--cds-gray-80);
-    --border-subtle-01:  var(--cds-gray-70);
-    --border-subtle-02:  var(--cds-gray-60);
-    --border-strong-01:  var(--cds-gray-60);
+    /* ---- black monochrome theme tokens ----
+       True-neutral near-black ladder. #000 page, faint layers for cards/fields
+       so depth comes from value, not from Carbon's blue-tinted grays. */
+    --background:        #000000;
+    --layer-01:          #0a0a0a;        /* card bg */
+    --layer-02:          #141414;        /* secondary surfaces (toast, topo nodes) */
+    --layer-accent-01:   #1c1c1c;        /* pills / accents */
+    --field-01:          #0d0d0d;        /* input bg */
+    --field-02:          #141414;
+    --border-subtle-01:  #262626;        /* hairlines / grid gutters */
+    --border-subtle-02:  #333333;
+    --border-strong-01:  #3d3d3d;        /* input underline, topo edges */
     --border-interactive:var(--cds-blue-50);
-    --text-primary:      var(--cds-gray-10);
-    --text-secondary:    var(--cds-gray-30);
-    --text-helper:       var(--cds-gray-40);
-    --text-placeholder:  var(--cds-gray-40);
+    --text-primary:      #f5f5f5;
+    --text-secondary:    #b0b0b0;
+    --text-helper:       #7a7a7a;
+    --text-placeholder:  #6a6a6a;
     --text-on-color:     var(--cds-white);
     --link-primary:      var(--cds-blue-40);
-    --icon-primary:      var(--cds-gray-10);
-    --icon-secondary:    var(--cds-gray-30);
+    --icon-primary:      #f5f5f5;
+    --icon-secondary:    #b0b0b0;
     --support-error:     var(--cds-red-50);
     --support-success:   var(--cds-green-40);
     --support-warning:   var(--cds-yellow-30);
     --support-info:      var(--cds-blue-50);
+    --support-paused:    var(--text-helper);  /* muted neutral — reads as "off" */
     --focus:             var(--cds-white);
-    --bg-hover:          rgba(141, 141, 141, .16);  /* adjustAlpha(gray50,.16) */
-    --bg-active:         rgba(141, 141, 141, .40);
-    --bg-selected:       rgba(141, 141, 141, .24);
+    --bg-hover:          rgba(255, 255, 255, .07);  /* neutral white overlay */
+    --bg-active:         rgba(255, 255, 255, .14);
+    --bg-selected:       rgba(255, 255, 255, .10);
     --button-primary:        var(--cds-blue-60);
     --button-primary-hover:  #0353e9;               /* Carbon button-primary-hover */
     --button-primary-active: var(--cds-blue-80);
@@ -110,7 +109,7 @@ button, input, select { font-family: inherit; }
     justify-content: space-between;
     height: 3rem;                       /* Carbon header = 48px */
     padding: 0 var(--sp-05);
-    background: var(--cds-gray-100);
+    background: var(--background);
     border-bottom: 1px solid var(--border-subtle-01);
 }
 
@@ -144,9 +143,10 @@ button, input, select { font-family: inherit; }
     background: var(--cds-gray-50);
     box-shadow: 0 0 0 3px rgba(141, 141, 141, .12);
 }
-.logo-dot.ok   { background: var(--support-success); box-shadow: 0 0 0 3px rgba(66, 190, 101, .16); }
-.logo-dot.warn { background: var(--support-warning); box-shadow: 0 0 0 3px rgba(241, 194, 27, .16); }
-.logo-dot.err  { background: var(--support-error);   box-shadow: 0 0 0 3px rgba(250, 77, 86, .16); }
+.logo-dot.ok     { background: var(--support-success); box-shadow: 0 0 0 3px rgba(66, 190, 101, .16); }
+.logo-dot.warn   { background: var(--support-warning); box-shadow: 0 0 0 3px rgba(241, 194, 27, .16); }
+.logo-dot.err    { background: var(--support-error);   box-shadow: 0 0 0 3px rgba(250, 77, 86, .16); }
+.logo-dot.paused { background: var(--support-paused);  box-shadow: 0 0 0 3px rgba(122, 122, 122, .16); }
 
 .topbar-actions { display: flex; gap: var(--sp-03); }
 
@@ -277,9 +277,10 @@ button, input, select { font-family: inherit; }
     background: var(--cds-gray-50);
     flex: none;
 }
-.dot.ok   { background: var(--support-success); }
-.dot.warn { background: var(--support-warning); }
-.dot.err  { background: var(--support-error); }
+.dot.ok     { background: var(--support-success); }
+.dot.warn   { background: var(--support-warning); }
+.dot.err    { background: var(--support-error); }
+.dot.paused { background: var(--support-paused); }
 .stat-value {
     font-family: var(--font-mono);
     font-size: 1rem;
@@ -489,9 +490,9 @@ select {
 .log {
     margin: var(--sp-05) 0 0;
     padding: var(--sp-05);
-    background: var(--cds-gray-100);
+    background: var(--background);
     border: 1px solid var(--border-subtle-01);
-    color: var(--cds-gray-30);
+    color: var(--text-secondary);
     font-family: var(--font-mono);
     font-size: .8125rem;                /* code-02 */
     line-height: 1.43;
@@ -527,8 +528,128 @@ select {
 .toast.warn { border-left-color: var(--support-warning); }
 .toast.err  { border-left-color: var(--support-error); }
 
+/* =====================================================================
+   Page router (nav tabs + page sections)
+   ===================================================================== */
+.nav-tabs {
+    position: sticky;
+    top: 3rem;                          /* sits right under the 48px topbar */
+    z-index: 15;
+    display: flex;
+    background: var(--background);
+    border-bottom: 1px solid var(--border-subtle-01);
+    padding: 0 var(--sp-05);
+}
+.nav-tab {
+    display: inline-flex;
+    align-items: center;
+    height: 2.75rem;
+    padding: 0 var(--sp-05);
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: .875rem;
+    border-bottom: 2px solid transparent;
+    transition: color 70ms, border-color 70ms, background-color 70ms;
+}
+.nav-tab:hover  { color: var(--text-primary); background: var(--bg-hover); }
+.nav-tab.active { color: var(--text-primary); border-bottom-color: var(--border-interactive); }
+
+/* Each page is itself a .grid; hide the ones that aren't active. The :not()
+   keeps higher specificity than .grid's display:grid so the active page shows. */
+.page:not(.active) { display: none; }
+
+/* dashboard-only notice */
+.lite-banner {
+    max-width: 1584px;
+    margin: 0 auto;
+    padding: var(--sp-03) var(--sp-05);
+    background: rgba(15, 98, 254, .12);     /* blue tint */
+    border-bottom: 1px solid var(--border-interactive);
+    color: var(--text-secondary);
+    font-size: .8125rem;
+}
+.lite-banner code {
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    background: var(--layer-02);
+    padding: 0 var(--sp-02);
+}
+
+/* =====================================================================
+   Per-component controls (status card)
+   ===================================================================== */
+.stat-controls { display: flex; gap: var(--sp-02); margin-top: var(--sp-03); flex-wrap: wrap; }
+.btn.xs { height: 1.75rem; padding: 0 var(--sp-03); font-size: .6875rem; gap: var(--sp-02); }
+
+/* =====================================================================
+   Topology diagram
+   ===================================================================== */
+.topo-wrap { width: 100%; overflow-x: auto; }
+#topo { width: 100%; min-width: 680px; height: auto; display: block; }
+
+.topo-node rect {
+    fill: var(--layer-02);
+    stroke: var(--border-strong-01);
+    stroke-width: 1.5;
+    transition: fill 120ms, stroke 120ms;
+}
+.topo-node text {
+    fill: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    text-anchor: middle;
+    dominant-baseline: middle;
+}
+.topo-node .topo-sub { fill: var(--text-helper); font-family: var(--font-mono); font-size: 11px; }
+.topo-node.controllable { cursor: pointer; }
+.topo-node.controllable:hover rect { stroke: var(--border-interactive); }
+.topo-node.selected rect { stroke: var(--border-interactive); stroke-width: 2.5; }
+.topo-node.ok rect     { stroke: var(--support-success); }
+.topo-node.warn rect   { stroke: var(--support-warning); }
+.topo-node.err rect    { stroke: var(--support-error); }
+.topo-node.paused rect { stroke: var(--support-paused); stroke-dasharray: 4 3; }
+
+.topo-edge {
+    fill: none;
+    stroke: var(--border-strong-01);
+    stroke-width: 2;
+    transition: stroke 120ms;
+}
+.topo-edge.edge-active { stroke: var(--border-interactive); }
+.topo-arrow  { fill: var(--border-strong-01); }
+.topo-branch { fill: var(--text-helper); font-family: var(--font-mono); font-size: 11px; text-anchor: middle; letter-spacing: .04em; }
+
+.topo-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-03);
+    margin-top: var(--sp-05);
+    padding-top: var(--sp-04);
+    border-top: 1px solid var(--border-subtle-01);
+    flex-wrap: wrap;
+}
+.topo-controls-label { font-size: .8125rem; color: var(--text-secondary); }
+.topo-controls-label strong { color: var(--text-primary); font-weight: 600; font-family: var(--font-mono); }
+
+/* =====================================================================
+   Log lines (client-side level colouring) + filter
+   ===================================================================== */
+.log-line { white-space: pre-wrap; word-break: break-word; }
+.log-line.lvl-info  { color: var(--text-secondary); }
+.log-line.lvl-warn  { color: var(--support-warning); }
+.log-line.lvl-error { color: var(--support-error); }
+.log-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-03);
+    font-size: .75rem;
+    color: var(--text-secondary);
+    padding-right: var(--sp-04);
+}
+.log-filter select { height: 2rem; width: auto; padding: 0 var(--sp-07) 0 var(--sp-03); }
+
 /* scrollbars - subtle, on-theme */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: var(--cds-gray-70); }
-::-webkit-scrollbar-thumb:hover { background: var(--cds-gray-60); }
+::-webkit-scrollbar-thumb { background: var(--border-strong-01); }
+::-webkit-scrollbar-thumb:hover { background: var(--border-subtle-02); }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -5,9 +5,12 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 const state = {
     status: null,
+    page: 'overview',
     logName: 'oc',
+    logLevel: '',
     follow: true,
     statusTimer: null,
+    listTimer: null,
     logTimer: null,
 };
 
@@ -49,8 +52,14 @@ const api = {
         if (!r.ok) throw new Error((await r.json()).error || r.statusText);
         return r.json();
     },
-    async logTail(name, n = 300) {
-        const r = await fetch(`/api/logs/${name}?tail=${n}`);
+    async componentAction(name, verb) {
+        const r = await fetch(`/api/components/${name}/${verb}`, {method: 'POST'});
+        if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+        return r.json();
+    },
+    async logTail(name, n = 300, level = '') {
+        const q = level ? `&level=${encodeURIComponent(level)}` : '';
+        const r = await fetch(`/api/logs/${name}?tail=${n}${q}`);
         return r.text();
     },
     async getConfig() {
@@ -98,20 +107,43 @@ function toast(msg, kind = 'ok') {
 
 // ---------- status rendering ----------
 function setDot(el, kind) {
-    el.classList.remove('ok', 'warn', 'err');
+    el.classList.remove('ok', 'warn', 'err', 'paused');
     if (kind) el.classList.add(kind);
+}
+
+// comp returns the per-component view, falling back to the flat pid fields when
+// talking to an older daemon that doesn't send `components`.
+function comp(s, name) {
+    if (s.components && s.components[name]) return s.components[name];
+    return {pid: name === 'openconnect' ? s.oc_pid : s.tinyproxy_pid, desired: 'up'};
+}
+
+// dotFor maps a component's (desired,pid) to a status-dot kind.
+function dotFor(c, extraOk = true) {
+    if (c.desired === 'down') return 'paused';
+    if (c.pid > 0) return extraOk ? 'ok' : 'warn';
+    return 'err';
 }
 
 function renderStatus(s) {
     state.status = s;
 
-    // brand
-    const brandDot = $('#brandDot'), brandSub = $('#brandSub');
+    // dashboard-only mode banner
+    $('#liteBanner').hidden = !s.no_connect;
+
+    const oc = comp(s, 'openconnect');
+    const tp = comp(s, 'tinyproxy');
     const tunOk = !!s.tun0_ip;
     const pacOk = !!s.pac_pid;
-    const proxyOk = !!s.tinyproxy_pid;
+    const proxyOk = tp.pid > 0;
+    const anyPaused = oc.desired === 'down' || tp.desired === 'down';
 
-    if (tunOk && pacOk && proxyOk) {
+    // brand
+    const brandDot = $('#brandDot'), brandSub = $('#brandSub');
+    if (anyPaused) {
+        setDot(brandDot, 'paused');
+        brandSub.textContent = 'paused';
+    } else if (tunOk && pacOk && proxyOk) {
         setDot(brandDot, 'ok');
         brandSub.textContent = 'connected';
     } else if (pacOk && proxyOk) {
@@ -125,20 +157,29 @@ function renderStatus(s) {
         brandSub.textContent = 'daemon down';
     }
 
-    // tunnel
-    setDot($('#dotTun'), tunOk ? 'ok' : 'err');
-    $('#valTun').textContent = s.tun0_ip || '— offline —';
-    $('#subTun').textContent = tunOk ? `openconnect pid ${s.oc_pid}` : 'openconnect not running';
+    // tunnel — "ok" only when tun0 actually has an IP
+    setDot($('#dotTun'), oc.desired === 'down' ? 'paused' : (tunOk ? 'ok' : (oc.pid > 0 ? 'warn' : 'err')));
+    $('#valTun').textContent = s.tun0_ip || (oc.desired === 'down' ? '— paused —' : '— offline —');
+    $('#subTun').textContent = oc.desired === 'down' ? 'paused — held down by supervisor'
+        : (oc.pid > 0 ? `openconnect pid ${oc.pid}` : 'openconnect recovering…');
 
     // proxy
-    setDot($('#dotProxy'), proxyOk ? 'ok' : 'err');
-    $('#valProxy').textContent = proxyOk ? `${s.wsl_ip || '?'}:${s.proxy_port}` : '—';
-    $('#subProxy').textContent = proxyOk ? `tinyproxy pid ${s.tinyproxy_pid}` : 'tinyproxy not running';
+    setDot($('#dotProxy'), dotFor(tp));
+    $('#valProxy').textContent = proxyOk ? `${s.wsl_ip || '?'}:${s.proxy_port}` : (tp.desired === 'down' ? '— paused —' : '—');
+    $('#subProxy').textContent = tp.desired === 'down' ? 'paused — held down by supervisor'
+        : (proxyOk ? `tinyproxy pid ${tp.pid}` : 'tinyproxy recovering…');
 
     // daemon
     setDot($('#dotPac'), pacOk ? 'ok' : 'err');
     $('#valPac').textContent = pacOk ? `pid ${s.pac_pid}` : '—';
     $('#subPac').textContent = pacOk ? 'serving PAC + API' : 'vpnctl.py not running';
+
+    // per-component control buttons (disable the redundant verb)
+    updateCompControls('openconnect', oc);
+    updateCompControls('tinyproxy', tp);
+
+    // topology
+    renderTopo(s, oc, tp);
 
     // mode
     $$('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === s.mode));
@@ -157,6 +198,50 @@ function renderStatus(s) {
     $('#updatedAt').textContent = 'updated ' + new Date().toLocaleTimeString();
 }
 
+// updateCompControls disables the redundant verb: Pause when already paused,
+// Start when already running (use Restart to bounce a running component).
+function updateCompControls(name, c) {
+    const root = $(`.stat-controls[data-comp="${name}"]`);
+    if (!root) return;
+    const paused = c.desired === 'down';
+    const pause = root.querySelector('[data-verb="pause"]');
+    const start = root.querySelector('[data-verb="start"]');
+    if (pause) pause.disabled = paused;
+    if (start) start.disabled = !paused && c.pid > 0;
+}
+
+// ---------- topology ----------
+function setNode(id, kind) {
+    const g = $(`#node-${id}`);
+    if (!g) return;
+    g.classList.remove('ok', 'warn', 'err', 'paused');
+    if (kind) g.classList.add(kind);
+}
+
+function setEdge(id, active) {
+    const e = $(`#${id}`);
+    if (e) e.classList.toggle('edge-active', !!active);
+}
+
+function renderTopo(s, oc, tp) {
+    setNode('win', 'ok');
+    setNode('pac', s.pac_pid ? 'ok' : 'err');
+    setNode('direct', 'ok');
+    setNode('proxy', dotFor(tp));
+    setNode('oc', oc.desired === 'down' ? 'paused' : (oc.pid > 0 ? 'ok' : 'warn'));
+    setNode('tun', s.tun0_ip ? 'ok' : (oc.desired === 'down' ? 'paused' : 'err'));
+    setNode('corp', s.tun0_ip ? 'ok' : 'err');
+
+    // Highlight the branch the default mode sends unlisted traffic down.
+    const vpnDefault = s.mode !== 'direct-default';
+    setEdge('e-win-pac', true);
+    setEdge('e-pac-direct', !vpnDefault);
+    setEdge('e-pac-proxy', vpnDefault);
+    setEdge('e-proxy-oc', vpnDefault);
+    setEdge('e-oc-tun', vpnDefault);
+    setEdge('e-tun-corp', vpnDefault);
+}
+
 async function refreshStatus() {
     try {
         const s = await api.status();
@@ -168,6 +253,7 @@ async function refreshStatus() {
         $('#brandSub').textContent = 'unreachable';
         ['#dotTun', '#dotProxy', '#dotPac'].forEach(s => setDot($(s), 'err'));
         ['#valTun', '#valProxy', '#valPac'].forEach(s => $(s).textContent = '—');
+        ['win', 'pac', 'direct', 'proxy', 'oc', 'tun', 'corp'].forEach(n => setNode(n, 'err'));
     }
 }
 
@@ -319,13 +405,31 @@ function wireListTools() {
 async function refreshLog() {
     const v = $('#logView');
     try {
-        const text = await api.logTail(state.logName, 400);
+        const text = await api.logTail(state.logName, 400, state.logLevel);
         const wasAtBottom = v.scrollTop + v.clientHeight >= v.scrollHeight - 20;
-        v.textContent = text || '(empty)';
+        renderLogLines(v, text || '(empty)');
         if (state.follow && wasAtBottom) v.scrollTop = v.scrollHeight;
     } catch (e) {
         v.textContent = 'failed to load: ' + e.message;
     }
+}
+
+// renderLogLines colourises level + component tags client-side. The structured
+// daemon lines look like "[HH:MM:SS] [level] [comp] msg"; other logs
+// (openconnect, tinyproxy) pass through untouched.
+function renderLogLines(v, text) {
+    const frag = document.createDocumentFragment();
+    for (const line of text.split('\n')) {
+        const div = document.createElement('div');
+        div.className = 'log-line';
+        const m = /^\[\d\d:\d\d:\d\d\] \[(\w+)\] \[([\w-]+)\]/.exec(line);
+        if (m) {
+            div.classList.add('lvl-' + m[1]);
+        }
+        div.textContent = line;
+        frag.append(div);
+    }
+    v.replaceChildren(frag);
 }
 
 function setLogTab(name) {
@@ -402,6 +506,10 @@ function wireForms() {
     $('#follow').addEventListener('change', e => {
         state.follow = e.target.checked;
     });
+    $('#logLevel').addEventListener('change', e => {
+        state.logLevel = e.target.value;
+        refreshLog();
+    });
 
     // action bar
     $$('[data-action]').forEach(b => {
@@ -427,25 +535,90 @@ function wireForms() {
     });
 }
 
-// ---------- boot ----------
-function applyHash() {
-    const m = /(?:^|[#&])log=(oc|pac|proxy)\b/.exec(location.hash || '');
-    if (m) setLogTab(m[1]);
+// ---------- component controls ----------
+async function runComponent(name, verb, btn) {
+    if (btn) btn.disabled = true;
+    try {
+        const r = await api.componentAction(name, verb);
+        const desc = r.desired === 'down' ? 'paused' : (r.pid ? `running (pid ${r.pid})` : 'starting…');
+        toast(`${name} ${verb} → ${desc}`);
+        await refreshStatus();
+    } catch (e) {
+        toast(`${name} ${verb} failed: ${e.message}`, 'err');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
 }
 
+// wireComponentControls binds every [data-comp][data-verb] button (status-card
+// controls and the topology control bar) to a component action.
+function wireComponentControls() {
+    $$('[data-comp][data-verb]').forEach(b => {
+        b.addEventListener('click', () => runComponent(b.dataset.comp, b.dataset.verb, b));
+    });
+}
+
+// wireTopo makes the controllable nodes select their component into the
+// control bar under the diagram.
+function wireTopo() {
+    $$('#topo .topo-node.controllable').forEach(g => {
+        g.addEventListener('click', () => selectTopoComponent(g.dataset.comp));
+    });
+}
+
+function selectTopoComponent(name) {
+    const bar = $('#topoControls');
+    if (!bar) return;
+    $('#topoControlsLabel').textContent = name;
+    bar.querySelectorAll('[data-verb]').forEach(b => { b.dataset.comp = name; });
+    bar.hidden = false;
+    // Highlight every node mapped to the selected component (oc + tun0 share one).
+    $$('#topo .topo-node').forEach(g => g.classList.toggle('selected', g.dataset.comp === name));
+}
+
+// ---------- router ----------
+const PAGES = ['overview', 'routing', 'config', 'logs'];
+
+function showPage(page) {
+    if (!PAGES.includes(page)) page = 'overview';
+    state.page = page;
+    $$('.page').forEach(p => p.classList.toggle('active', p.dataset.page === page));
+    $$('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.page === page));
+    // Refresh the entered page's data immediately (its poller only runs while visible).
+    if (page === 'routing') { refreshList('vpn'); refreshList('direct'); }
+    if (page === 'logs') refreshLog();
+}
+
+function router() {
+    const h = location.hash || '';
+    // Legacy deep link: #log=oc → Logs page with that tab selected.
+    const mLog = /(?:^|[#&/])log=(oc|pac|proxy|events)\b/.exec(h);
+    const mPage = /^#\/?(overview|routing|config|logs)\b/.exec(h);
+    let page = 'overview';
+    if (mPage) page = mPage[1];
+    if (mLog) { page = 'logs'; setLogTab(mLog[1]); }
+    showPage(page);
+}
+
+// ---------- boot ----------
 async function boot() {
     wireForms();
     wireConfigForm();
     wireListTools();
-    applyHash();
-    window.addEventListener('hashchange', applyHash);
+    wireComponentControls();
+    wireTopo();
+    router();
+    window.addEventListener('hashchange', router);
     await Promise.all([refreshStatus(), refreshList('vpn'), refreshList('direct'), refreshLog(), loadConfig()]);
-    state.statusTimer = setInterval(() => {
-        refreshStatus();
-        refreshList('vpn');
-        refreshList('direct');
+    // Status always polls (drives nav badge + topology). List/log pollers only
+    // do work while their page is visible.
+    state.statusTimer = setInterval(refreshStatus, 3000);
+    state.listTimer = setInterval(() => {
+        if (state.page === 'routing') { refreshList('vpn'); refreshList('direct'); }
     }, 4000);
-    state.logTimer = setInterval(refreshLog, 2000);
+    state.logTimer = setInterval(() => {
+        if (state.page === 'logs') refreshLog();
+    }, 2000);
 }
 
 boot();
