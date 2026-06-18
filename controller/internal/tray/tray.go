@@ -49,6 +49,21 @@ var (
 	lastMode   atomic.Value // string — last seen mode
 )
 
+// componentMenu groups a component's submenu parent and its action children so
+// renderStatus can relabel/enable them from /api/status without threading eight
+// menu items through every call.
+type componentMenu struct {
+	parent              *systray.MenuItem
+	start, pause, restart *systray.MenuItem
+	label               string // "Tunnel", "Proxy"
+}
+
+// compMenus holds the two per-component submenus, populated in onReady.
+var compMenus struct {
+	tunnel componentMenu // openconnect
+	proxy  componentMenu // tinyproxy
+}
+
 // Run blocks until the user picks Quit.
 func Run(e *cli.Env) {
 	env = e
@@ -76,6 +91,12 @@ func onReady() {
 	upItem := systray.AddMenuItem("Up", "Bring tunnel + proxy up")
 	downItem := systray.AddMenuItem("Down", "Tear down")
 	restartItem := systray.AddMenuItem("Restart", "Down then up")
+
+	// Per-component control. Each component can be started, paused (stopped and
+	// pinned down so the supervisor leaves it), or restarted independently.
+	systray.AddSeparator()
+	compMenus.tunnel = newComponentMenu("Tunnel", "openconnect")
+	compMenus.proxy = newComponentMenu("Proxy", "tinyproxy")
 
 	systray.AddSeparator()
 	dashItem := systray.AddMenuItem("Dashboard", "Open the web dashboard")
@@ -109,10 +130,22 @@ func onReady() {
 				go runVerb("down", func() error { return cli.Down(env) })
 			case <-restartItem.ClickedCh:
 				go runVerb("restart", func() error { return cli.Restart(env) })
+			case <-compMenus.tunnel.start.ClickedCh:
+				go componentVerb("tunnel", "openconnect", "start")
+			case <-compMenus.tunnel.pause.ClickedCh:
+				go componentVerb("tunnel", "openconnect", "pause")
+			case <-compMenus.tunnel.restart.ClickedCh:
+				go componentVerb("tunnel", "openconnect", "restart")
+			case <-compMenus.proxy.start.ClickedCh:
+				go componentVerb("proxy", "tinyproxy", "start")
+			case <-compMenus.proxy.pause.ClickedCh:
+				go componentVerb("proxy", "tinyproxy", "pause")
+			case <-compMenus.proxy.restart.ClickedCh:
+				go componentVerb("proxy", "tinyproxy", "restart")
 			case <-modeToggle.ClickedCh:
 				go runVerb("mode", switchMode)
 			case <-dashItem.ClickedCh:
-				_ = cli.OpenDashboard(env, "")
+				go runVerb("dashboard", func() error { return cli.Dashboard(env) })
 			case <-updateItem.ClickedCh:
 				// cli.Upgrade spawns msiexec and returns immediately; the
 				// tray keeps running until MSI replaces our exe (when it
@@ -124,6 +157,72 @@ func onReady() {
 			}
 		}
 	}()
+}
+
+// newComponentMenu builds a "<label> (<comp>)" submenu with Start/Pause/Restart
+// children. The children's clicks are handled in onReady's action loop.
+func newComponentMenu(label, comp string) componentMenu {
+	parent := systray.AddMenuItem(label, comp+" lifecycle")
+	return componentMenu{
+		parent:  parent,
+		start:   parent.AddSubMenuItem("Start", "Start / resume "+comp),
+		pause:   parent.AddSubMenuItem("Pause", "Stop "+comp+" and keep it down"),
+		restart: parent.AddSubMenuItem("Restart", "Restart "+comp),
+		label:   label,
+	}
+}
+
+// componentVerb fires a component action and surfaces errors via tooltip.
+func componentVerb(label, comp, verb string) {
+	runVerb(label+" "+verb, func() error {
+		_, err := cli.ComponentAction(env, comp, verb)
+		return err
+	})
+}
+
+// updateComponentMenus relabels both submenus from /api/status. reachable=false
+// (daemon down) disables every action.
+func updateComponentMenus(s *api.Status, reachable bool) {
+	var ocPid, tpPid int
+	if s != nil {
+		ocPid, tpPid = s.OcPid, s.TinyproxyPid
+	}
+	updateComponentMenu(compMenus.tunnel, componentFor(s, "openconnect", ocPid), reachable)
+	updateComponentMenu(compMenus.proxy, componentFor(s, "tinyproxy", tpPid), reachable)
+}
+
+// componentFor returns the per-component view, falling back to the flat pid
+// fields when talking to an older daemon that doesn't send `components`.
+func componentFor(s *api.Status, name string, flatPid int) api.Component {
+	if s != nil && s.Components != nil {
+		if c, ok := s.Components[name]; ok {
+			return c
+		}
+	}
+	return api.Component{Pid: flatPid, Desired: "up", Supervised: false}
+}
+
+func updateComponentMenu(m componentMenu, c api.Component, reachable bool) {
+	if !reachable {
+		m.parent.SetTitle(m.label)
+		m.start.Disable()
+		m.pause.Disable()
+		m.restart.Disable()
+		return
+	}
+	m.start.Enable()
+	m.restart.Enable()
+	switch {
+	case c.Paused():
+		m.parent.SetTitle(m.label + " — paused")
+		m.pause.Disable() // already down; offer Start to resume
+	case c.Pid == 0:
+		m.parent.SetTitle(m.label + " — recovering")
+		m.pause.Enable()
+	default:
+		m.parent.SetTitle(m.label + " — running")
+		m.pause.Enable()
+	}
 }
 
 // switchMode flips between the two modes based on whatever mode the poller
@@ -154,11 +253,13 @@ func renderStatus(statusRow, modeToggle *systray.MenuItem, s *api.Status, err er
 		systray.SetTooltip("vpn — daemon unreachable")
 		modeToggle.SetTitle("Switch mode")
 		modeToggle.Disable()
+		updateComponentMenus(s, false)
 		return
 	}
 	lastIP.Store(s.WSLIp)
 	lastMode.Store(s.Mode)
 	modeToggle.Enable()
+	updateComponentMenus(s, true)
 
 	other := "direct-default"
 	if s.Mode == "direct-default" {
@@ -166,19 +267,40 @@ func renderStatus(statusRow, modeToggle *systray.MenuItem, s *api.Status, err er
 	}
 	modeToggle.SetTitle("Switch to " + other)
 
+	oc := componentFor(s, "openconnect", s.OcPid)
+	tp := componentFor(s, "tinyproxy", s.TinyproxyPid)
+
 	switch {
-	case s.Tun0IP != "" && s.TinyproxyPid > 0:
+	case oc.Paused() || tp.Paused():
+		// A loud, distinct state: the operator deliberately stopped something,
+		// so traffic through it will fail until resumed.
+		setIcon("warn")
+		statusRow.SetTitle("⏸ " + pausedLabel(oc, tp) + " paused · " + s.Mode)
+		systray.SetTooltip("vpn — " + pausedLabel(oc, tp) + " paused; traffic through it will fail")
+	case s.Tun0IP != "" && tp.Pid > 0:
 		setIcon("connected")
 		statusRow.SetTitle(fmt.Sprintf("● %s · %s", s.Tun0IP, s.Mode))
 		systray.SetTooltip(fmt.Sprintf("vpn — connected (%s)\nproxy %s:%d", s.Mode, s.WSLIp, s.ProxyPort))
-	case s.TinyproxyPid > 0:
+	case tp.Pid > 0 && oc.Pid == 0:
 		setIcon("warn")
 		statusRow.SetTitle("● tunnel down · " + s.Mode)
-		systray.SetTooltip("vpn — proxy up, tunnel down")
+		systray.SetTooltip("vpn — proxy up, tunnel recovering")
 	default:
 		setIcon("warn")
 		statusRow.SetTitle("○ partial")
 		systray.SetTooltip("vpn — partially up")
+	}
+}
+
+// pausedLabel names which component(s) are paused for the status line/tooltip.
+func pausedLabel(oc, tp api.Component) string {
+	switch {
+	case oc.Paused() && tp.Paused():
+		return "tunnel+proxy"
+	case oc.Paused():
+		return "tunnel"
+	default:
+		return "proxy"
 	}
 }
 

@@ -459,6 +459,36 @@ func Restart(e *Env) error {
 	return Up(e)
 }
 
+// ComponentAction is the shared entry point (CLI verb + tray menu) for driving
+// one supervised component through one verb. Pause/resume are aliases of
+// stop/start on the daemon side.
+func ComponentAction(e *Env, name, verb string) (*api.ComponentResult, error) {
+	r, err := newClient(e).ComponentAction(name, verb)
+	if err != nil {
+		return nil, fmt.Errorf("daemon unreachable or rejected: %w", err)
+	}
+	return r, nil
+}
+
+// Component implements: vpn component <openconnect|tinyproxy> <verb>.
+func Component(e *Env, args []string) error {
+	const usage = "usage: vpn component <openconnect|tinyproxy> <start|stop|pause|resume|restart>"
+	if len(args) < 2 {
+		return fmt.Errorf(usage)
+	}
+	name, verb := strings.ToLower(args[0]), strings.ToLower(args[1])
+	r, err := ComponentAction(e, name, verb)
+	if err != nil {
+		return err
+	}
+	state := "stopped"
+	if r.Pid != 0 {
+		state = fmt.Sprintf("running (pid %d)", r.Pid)
+	}
+	fmt.Printf("[component] %s %s -> desired=%s, %s\n", name, verb, r.Desired, state)
+	return nil
+}
+
 func SyncHosts(e *Env) error {
 	out, err := wsl.SyncHostsToWSL(e.Cfg.WSLDistro, e.Cfg.SudoPassword)
 	if err != nil {
@@ -477,6 +507,43 @@ func DashboardURL(e *Env) string {
 		ip = "127.0.0.1"
 	}
 	return fmt.Sprintf("http://%s:%d/", ip, e.Cfg.PACPort)
+}
+
+// Dashboard opens the web dashboard, starting the daemon first if it isn't
+// already running. When it has to start the daemon it uses "dashboard-only"
+// mode: the PAC/API/UI server comes up but openconnect + tinyproxy are left
+// stopped and the Windows proxy settings are NOT touched — so you can view and
+// configure things (or start components individually) without a `vpn up`.
+func Dashboard(e *Env) error {
+	if IsDaemonReachable(e) {
+		return OpenDashboard(e, "")
+	}
+	fmt.Println("[dashboard] daemon not running — starting in dashboard-only mode (no VPN)...")
+	_ = wsl.StopDaemon(e.KeepalivePID)
+	if err := wsl.LaunchDaemon(e.Cfg.WSLDistro, e.WSLInstallDir, e.WSLDataDir,
+		release.LocalVersion(), e.KeepalivePID, "--no-connect"); err != nil {
+		return fmt.Errorf("launching dashboard daemon: %w", err)
+	}
+	if err := waitForDashboard(e); err != nil {
+		return err
+	}
+	fmt.Println("[dashboard] up — components are stopped; run `vpn up` (or use the dashboard) to connect.")
+	return OpenDashboard(e, "")
+}
+
+// waitForDashboard waits for the daemon's HTTP server to answer. Unlike
+// waitForDaemon it doesn't expect an openconnect handshake, so the server is
+// ready in ~1-2s.
+func waitForDashboard(e *Env) error {
+	client := newClient(e).Quick()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if s, err := client.Status(); err == nil && s.PacPid != 0 {
+			return nil
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	return fmt.Errorf("dashboard daemon did not respond after 20s — check pac.log")
 }
 
 // OpenDashboard launches the user's default browser pointed at the dashboard.
@@ -572,6 +639,9 @@ Usage:
   vpn list                      cat both list files
   vpn logs [oc|pac|proxy] [-f]  tail a log (default: pac, -f follows)
   vpn reload                    re-read lists + refresh env vars
+  vpn component <name> <verb>   control one component without a full restart
+                                  name = openconnect | tinyproxy
+                                  verb = start | stop | pause | resume | restart
   vpn sync-hosts                copy Windows hosts -> WSL /etc/hosts
   vpn tray                      run the system-tray UI
   vpn dashboard                 open the web dashboard in your browser

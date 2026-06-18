@@ -102,7 +102,7 @@ func WSLPath(distro, winPath string) (string, error) {
 // Both paths are quoted because the installed location is `C:\Program Files\…`
 // which translates to `/mnt/c/Program Files/…` in WSL — the embedded space
 // would otherwise be argv-split by Windows commandline parsing.
-func LaunchDaemon(distro, wslInstallDir, wslDataDir, version, keepalivePath string) error {
+func LaunchDaemon(distro, wslInstallDir, wslDataDir, version, keepalivePath string, extraArgs ...string) error {
 	// wsl.exe ALWAYS spawns a conhost (console window) when launched via
 	// CreateProcess (Go's os/exec), regardless of CREATE_NO_WINDOW / HideWindow.
 	// PowerShell's Start-Process -WindowStyle Hidden works because it uses
@@ -111,6 +111,9 @@ func LaunchDaemon(distro, wslInstallDir, wslDataDir, version, keepalivePath stri
 	// doesn't return a PID directly, so we get it from the SHELLEXECUTEINFO
 	// hProcess and convert with GetProcessId.
 	args := fmt.Sprintf(`-d %s -e python3 "%s/vpnctl.py" --data-dir "%s" --version "%s"`, distro, wslInstallDir, wslDataDir, version)
+	for _, a := range extraArgs {
+		args += " " + a
+	}
 	pid, err := shellExecuteHiddenPID("wsl.exe", args, "")
 	if err != nil {
 		return err
@@ -177,9 +180,9 @@ func KillResidual(distro, sudoPassword, wslDataDir string) error {
 	script := fmt.Sprintf(`
 [ -f %s/pac.pid ] && kill $(cat %s/pac.pid) 2>/dev/null
 echo %s | sudo -S bash -c 'pkill tinyproxy ; pkill openconnect' 2>/dev/null
-rm -f %s/oc.pid %s/proxy.pid %s/pac.pid /tmp/tinyproxy.pid 2>/dev/null
+rm -f %s/oc.pid %s/proxy.pid %s/pac.pid %s/desired.json /tmp/tinyproxy.pid /tmp/tinyproxy.log 2>/dev/null
 true
-`, rt, rt, shellQuote(sudoPassword), rt, rt, rt)
+`, rt, rt, shellQuote(sudoPassword), rt, rt, rt, rt)
 	_, err := RunBase64(distro, script)
 	return err
 }

@@ -70,12 +70,14 @@ func main() {
 		exitOnErr(cli.Logs(env, args))
 	case "reload":
 		exitOnErr(cli.Reload(env))
+	case "component":
+		exitOnErr(cli.Component(env, args))
 	case "sync-hosts":
 		exitOnErr(cli.SyncHosts(env))
 	case "autostart":
 		exitOnErr(cli.Autostart(env, args))
 	case "dashboard", "open":
-		exitOnErr(cli.OpenDashboard(env, ""))
+		exitOnErr(cli.Dashboard(env))
 	default:
 		fmt.Fprintln(os.Stderr, "unknown verb:", verb)
 		cli.Usage()
